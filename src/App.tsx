@@ -1,13 +1,12 @@
-import { Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import type { EditorView } from "@codemirror/view";
-import { api, type FileSnapshot, type TargetInfo } from "./lib/api";
+import { api, type ArchivedEntry, type FileSnapshot, type TargetInfo } from "./lib/api";
 import {
   appendModuleEdit,
-  closeUpgradeEdits,
+  applyEdits,
   deleteEdit,
-  disableEdits,
-  enableEdits,
+  insertAfterModuleEdit,
   makeModuleBlock,
   moduleHue,
   moduleLabel,
@@ -15,12 +14,13 @@ import {
   parseDoc,
   renameEdit,
   wrapSelectionEdits,
+  type Edit,
   type ModuleSeg,
 } from "./lib/document";
 import { createEditor, replaceDoc } from "./lib/editor";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar, shortPath } from "./components/Sidebar";
-import { ModulePanel, type LibraryEntry, type PanelModule } from "./components/ModulePanel";
+import { ModulePanel, type ArchivedModule, type LibraryEntry, type PanelModule } from "./components/ModulePanel";
 import { StatusBar, type StatusFlash } from "./components/StatusBar";
 import { ConfirmModal, type ConfirmSpec } from "./components/ConfirmModal";
 
@@ -31,10 +31,15 @@ function samePath(a: string, b: string): boolean {
 function starterContent(t: TargetInfo): string {
   const body =
     `这里是 ${t.label} 的第一个指令模块示例。\n\n` +
-    "一对 pizzic-module 语义标签包裹的段落是一个模块：name 属性即模块名，" +
-    '写 enabled="false" 表示停用。可在右侧面板单独启用或停用，' +
-    "停用后正文会存档在 Pizzic 中，随时可以恢复。";
+    "一对 pizzic-module 语义标签包裹的段落是一个模块：name 属性即模块名。" +
+    "停用会把模块从文件中移除并存档在 Pizzic 中（可随时恢复到原位）；" +
+    '写入 enabled="false" 的旧式空壳同样被识别为停用。';
   return `# ${t.label} 指令\n\n${makeModuleBlock("welcome", body)}`;
+}
+
+function firstHeading(text: string): string | null {
+  const m = text.match(/^#{1,6}\s+(.+?)\s*$/m);
+  return m ? m[1]!.trim() : null;
 }
 
 export default function App() {
@@ -43,7 +48,7 @@ export default function App() {
   const [currentId, setCurrentId] = createSignal<string | null>(null);
   const [disk, setDisk] = createSignal<FileSnapshot | null>(null);
   const [dirty, setDirty] = createSignal(false);
-  const [archived, setArchived] = createSignal<Record<string, string>>({});
+  const [archived, setArchived] = createSignal<Record<string, ArchivedEntry>>({});
   const [modules, setModules] = createSignal<ModuleSeg[]>([]);
   const [hasSelection, setHasSelection] = createSignal(false);
   const [external, setExternal] = createSignal(false);
@@ -72,6 +77,27 @@ export default function App() {
       chars: m.body.replace(/\s+$/, "").length,
     })),
   );
+
+  /** 停用区（存档驱动）：state.json 中有、文档中没有的条目即停用模块（ADR-004）。 */
+  const archivedList = createMemo<ArchivedModule[]>(() => {
+    const docNames = new Set(modules().map((m) => m.name));
+    return Object.entries(archived())
+      .map(([name, e]) => ({
+        name,
+        hue: moduleHue(name),
+        label: firstHeading(e.content) ?? name,
+        chars: e.content.replace(/\s+$/, "").length,
+      }))
+      .filter((e) => !docNames.has(e.name));
+  });
+
+  /**
+   * 冲突语义（ADR-004 实测修订）：「文档有同名启用模块 + 存档有条目」时存档
+   * 一律保留——停用后未保存就重启/切换会精确制造这个组合，立即删档会把
+   * 「停用尚未落盘」误判为「外部加回」而丢数据。存档只在明确的用户动作
+   * （删除模块、删除存档、重命名迁移、启用恢复）中增删；显示层由
+   * archivedList 的过滤让位于文档，悬挂条目无害。
+   */
 
   function flash(text: string, tone: "ok" | "warn" = "ok") {
     setStatus({ text, tone });
@@ -123,7 +149,7 @@ export default function App() {
       const snap = await api.readFile(shared.path);
       const disabled = await api.getDisabled(shared.path);
       const entries: LibraryEntry[] = parseDoc(snap.text).modules.map((m) => {
-        const body = m.enabled ? m.body : (disabled[m.name] ?? "");
+        const body = m.enabled ? m.body : (disabled[m.name]?.content ?? "");
         return { name: m.name, label: moduleLabel(m), body, hasBody: body.trim() !== "" };
       });
       setSharedLib(entries);
@@ -256,23 +282,71 @@ export default function App() {
     if (shared && samePath(changed, shared.path)) void loadSharedLib();
   }
 
+  /**
+   * 启停统一入口（ADR-004）：停用 = 存档（正文 + 前驱锚）后整块移除；
+   * 启用 = 从存档按位置锚插回。文件中的 enabled="false" 旧式壳在启用时一并移除。
+   */
   async function toggleModule(name: string) {
     const t = current();
     if (!t || !view) return;
-    const m = parseDoc(view.state.doc.toString()).modules.find((x) => x.name === name);
-    if (!m) return;
-    try {
-      if (m.enabled) {
-        await api.setDisabled(t.path, name, m.body);
-        view.dispatch({ changes: [...disableEdits(m), ...closeUpgradeEdits(m)] });
+    const text = view.state.doc.toString();
+    const mods = parseDoc(text).modules;
+    const m = mods.find((x) => x.name === name);
+
+    if (m && m.enabled) {
+      const idx = mods.indexOf(m);
+      const after = idx > 0 ? mods[idx - 1]!.name : null;
+      try {
+        await api.setDisabled(t.path, name, m.body, after);
+        // 乐观同步本地存档镜像：面板「已停用」分区由该 signal 派生
+        setArchived((prev) => ({ ...prev, [name]: { content: m.body, after } }));
+        view.dispatch({ changes: [deleteEdit(m, text)] });
         flash(`已停用 ${name}，正文已存档`);
-      } else {
-        const stored = archived()[name];
-        if (stored === undefined) flash(`${name} 没有存档正文，将以空模块启用`, "warn");
-        await api.setDisabled(t.path, name, null);
-        view.dispatch({ changes: [...enableEdits(m, stored), ...closeUpgradeEdits(m)] });
-        flash(`已启用 ${name}`);
+      } catch (e) {
+        flash(String(e), "warn");
       }
+      return;
+    }
+
+    const entry = archived()[name];
+    if (!entry) {
+      flash(`${name} 没有存档正文，无法启用`, "warn");
+      return;
+    }
+    try {
+      await api.setDisabled(t.path, name, null, null);
+      setArchived((prev) => {
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+      if (m) {
+        // 文件中的停用壳（enabled="false"），先移除再插回正文块
+        view.dispatch({ changes: [deleteEdit(m, text)] });
+      }
+      const base = view.state.doc.toString();
+      const edit = entry.after
+        ? insertAfterModuleEdit(base, entry.after, name, entry.content)
+        : appendModuleEdit(base, name, entry.content);
+      view.dispatch({ changes: [edit] });
+      flash(`已启用 ${name}`);
+    } catch (e) {
+      flash(String(e), "warn");
+    }
+  }
+
+  /** 删除停用存档（停用区行的删除动作），不动文档。 */
+  async function deleteArchived(name: string) {
+    const t = current();
+    if (!t) return;
+    try {
+      await api.setDisabled(t.path, name, null, null);
+      setArchived((prev) => {
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+      flash(`已删除存档 ${name}`);
     } catch (e) {
       flash(String(e), "warn");
     }
@@ -285,8 +359,14 @@ export default function App() {
     const m = parseDoc(text).modules.find((x) => x.name === name);
     if (!m) return;
     view.dispatch({ changes: [deleteEdit(m, text)] });
-    if (archived()[name] !== undefined) {      try {
-        await api.setDisabled(t.path, name, null);
+    if (archived()[name] !== undefined) {
+      try {
+        await api.setDisabled(t.path, name, null, null);
+        setArchived((prev) => {
+          const next = { ...prev };
+          delete next[name];
+          return next;
+        });
       } catch {
         /* 存档清理失败无碍 */
       }
@@ -304,12 +384,18 @@ export default function App() {
     }
     const m = mods.find((x) => x.name === oldName);
     if (!m) return;
-    view.dispatch({ changes: [renameEdit(m, newName), ...closeUpgradeEdits(m)] });
+    view.dispatch({ changes: [renameEdit(m, newName)] });
     const stored = archived()[oldName];
-    if (stored !== undefined) {
+    if (stored) {
       try {
-        await api.setDisabled(t.path, oldName, null);
-        await api.setDisabled(t.path, newName, stored);
+        await api.setDisabled(t.path, oldName, null, null);
+        await api.setDisabled(t.path, newName, stored.content, stored.after);
+        setArchived((prev) => {
+          const next = { ...prev };
+          delete next[oldName];
+          next[newName] = stored;
+          return next;
+        });
       } catch {
         /* 存档迁移失败无碍 */
       }
@@ -499,11 +585,13 @@ export default function App() {
         <ModulePanel
           modules={panelModules()}
           archived={archived()}
+          archivedList={archivedList()}
           hasSelection={hasSelection()}
           currentIsShared={currentIsShared()}
           lib={sharedLib()}
           onToggle={(name) => void toggleModule(name)}
           onDelete={(name) => void removeModule(name)}
+          onDeleteArchived={(name) => void deleteArchived(name)}
           onRename={(oldName, newName) => void renameModule(oldName, newName)}
           onWrapSelection={wrapSelection}
           onNewModule={newModule}

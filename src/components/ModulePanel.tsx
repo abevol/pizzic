@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
+import type { ArchivedEntry } from "../lib/api";
 import { NAME_RE } from "../lib/document";
 
 export interface PanelModule {
@@ -6,6 +7,14 @@ export interface PanelModule {
   label: string;
   hue: number;
   enabled: boolean;
+  chars: number;
+}
+
+/** 停用区条目（存档驱动，ADR-004）。 */
+export interface ArchivedModule {
+  name: string;
+  hue: number;
+  label: string;
   chars: number;
 }
 
@@ -58,12 +67,14 @@ function IconBtn(props: { icon: string; title: string; danger?: boolean; onClick
 
 export function ModulePanel(props: {
   modules: PanelModule[];
-  archived: Record<string, string>;
+  archived: Record<string, ArchivedEntry>;
+  archivedList: ArchivedModule[];
   hasSelection: boolean;
   currentIsShared: boolean;
   lib: LibraryEntry[] | null;
   onToggle(name: string): void;
   onDelete(name: string): void;
+  onDeleteArchived(name: string): void;
   onRename(oldName: string, newName: string): void;
   onWrapSelection(): void;
   onNewModule(): void;
@@ -121,7 +132,8 @@ export function ModulePanel(props: {
           模块
         </span>
         <span class="rounded-full bg-white/[0.06] px-2 py-0.5 font-mono text-[10px] text-[#8F97AC]">
-          {props.modules.filter((m) => m.enabled).length}/{props.modules.length}
+          {props.modules.filter((m) => m.enabled).length}/
+          {props.modules.length + props.archivedList.length}
         </span>
         <span class="flex-1" />
         {toolPill({
@@ -245,6 +257,84 @@ export function ModulePanel(props: {
                             </span>
                           </Show>
                           <Toggle on={m.enabled} onChange={() => props.onToggle(m.name)} />
+                        </Show>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }}
+            </For>
+          </div>
+        </Show>
+
+        <Show when={props.archivedList.length > 0}>
+          <div class="mt-4 mb-1 flex items-center gap-2 px-3">
+            <span class="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#59617A]">
+              已停用
+            </span>
+            <span class="rounded-full bg-white/[0.05] px-1.5 py-0.5 font-mono text-[9.5px] text-[#59617A]">
+              {props.archivedList.length}
+            </span>
+            <span class="h-px flex-1 bg-gradient-to-r from-white/[0.09] to-transparent" />
+          </div>
+          <div class="flex flex-col gap-1 pb-1">
+            <For each={props.archivedList}>
+              {(a, i) => {
+                const isConfirming = () => confirming() === a.name;
+                return (
+                  <div
+                    class="animate-rise"
+                    style={{ "animation-delay": `${Math.min(i() * 45, 300)}ms` }}
+                  >
+                    <div class="group rounded-2xl px-3 py-2.5 opacity-60 transition-all duration-500 ease-fluid hover:opacity-85">
+                      <div class="flex items-center gap-2.5">
+                        <span
+                          class="size-2 shrink-0 rounded-full border border-dashed transition-all duration-500"
+                          style={{
+                            "border-color": `${HUE_DOT[a.hue]}66`,
+                          }}
+                        />
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate text-[13px] leading-5 text-[#8A91A6]">
+                            {a.label}
+                          </span>
+                          <span class="block truncate font-mono text-[10.5px] leading-4 text-[#59617A]">
+                            {a.name} · {a.chars} 字（存档）
+                          </span>
+                        </span>
+                        <Show
+                          when={!isConfirming()}
+                          fallback={
+                            <div class="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setConfirming(null);
+                                  props.onDeleteArchived(a.name);
+                                }}
+                                class="h-6 rounded-full bg-[#E5484D]/15 px-2.5 text-[11px] text-[#FB7185] ring-1 ring-[#E5484D]/30 transition-all duration-300 hover:bg-[#E5484D]/25"
+                              >
+                                删除
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirming(null)}
+                                class="h-6 rounded-full px-2 text-[11px] text-[#6E7690] hover:text-[#C9CEDA]"
+                              >
+                                取消
+                              </button>
+                            </div>
+                          }
+                        >
+                          <span class="flex items-center">
+                            <IconBtn
+                              icon="ph-trash"
+                              title="删除停用存档（正文将不可恢复）"
+                              danger
+                              onClick={() => askDelete(a.name)}
+                            />
+                          </span>
+                          <Toggle on={false} onChange={() => props.onToggle(a.name)} />
                         </Show>
                       </div>
                     </div>

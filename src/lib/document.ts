@@ -5,8 +5,11 @@
  *
  * 模块格式（ADR-003）：闭合的 XML 语义标签。
  *   <pizzic-module name="codegraph">            开启模块，name 必填
- *   <pizzic-module name="rtk" enabled="false">  停用态空壳（正文已移入存档）
  *   </pizzic-module>                            闭合，元素名自校验配对
+ *
+ * 停用语义（ADR-004，修订 ADR-001）：停用即从文档中整块移除，正文存入
+ * Pizzic 存档；state.json 中有而文档中没有的条目即「已停用」。enabled="false"
+ * 不再由生成端产出，但解析端保持宽容（旧文件/手写壳可读）。
  *
  * 约束：
  * - 标签必须位于行首（允许前置空白），行内出现的标签视为普通文本，防止讲解性文字误配对；
@@ -16,8 +19,8 @@
  * - 文件包含 <!DOCTYPE 或 <!ENTITY 时视为不可信 XML 载体：本解析器是扫描式的，
  *   不构建实体表、不启用外部实体，但仍拒绝解析此类文件的模块结构（全文视为普通文本）；
  * - 接受自闭合形式 <pizzic-module name="x"/> 作为空模块（生成端不产出该形态）；
- * - 只读兼容 v0.1 注释标签 <!-- Pizzic:begin:name [disabled] --> / <!-- Pizzic:end -->，
- *   任何编辑操作都会把旧块升级为 XML 语义标签（closeUpgradeEdits）。
+ * - 只读兼容 v0.1 注释标签 <!-- Pizzic:begin:name [disabled] --> / <!-- Pizzic:end -->；
+ *   旧块在 ADR-004 下的停用即整块移除（不再需要标签升级）。
  */
 
 export const CLOSE_TAG = "</pizzic-module>";
@@ -327,31 +330,37 @@ export interface Edit {
   insert: string;
 }
 
-/** v0.1 旧注释格式的闭合标签升级为 XML 语义标签；新格式的块返回空。 */
-export function closeUpgradeEdits(m: ModuleSeg): Edit[] {
-  return m.legacy && m.endEnd > m.endStart
-    ? [{ from: m.endStart, to: m.endEnd, insert: CLOSE_TAG }]
-    : [];
+/**
+ * 与 CodeMirror 多段 dispatch 相同的语义：所有偏移基于同一份原文本，
+ * 按位置倒序应用。供编辑器之外的纯文本场景（自检、编排计算）使用。
+ */
+export function applyEdits(text: string, edits: Edit[]): string {
+  let out = text;
+  for (const e of [...edits].sort((a, b) => b.from - a.from)) {
+    out = out.slice(0, e.from) + e.insert + out.slice(e.to);
+  }
+  return out;
 }
 
-/** 停用模块：正文从文档中移除（调用方负责先存档），开标签补 enabled="false"。 */
-export function disableEdits(m: ModuleSeg): Edit[] {
-  return [
-    { from: m.beginStart, to: m.beginEnd, insert: buildBeginTag(m.name, false) },
-    // 保留一个换行，让闭合标签保持行首（行首约束要求），壳呈现为两行
-    { from: m.bodyStart, to: m.bodyEnd, insert: "\n" },
-  ];
+/**
+ * ADR-004：停用 = 整块移除（调用方负责先存档），复用 deleteEdit；
+ * 启用 = 从存档把块写回文件。以下两个函数负责「写回」的落位。
+ */
+
+/** 在指定模块之后插入新模块块（位置锚恢复）；锚不存在则落到文末。 */
+export function insertAfterModuleEdit(
+  docText: string,
+  afterName: string,
+  name: string,
+  body: string,
+): Edit {
+  const anchor = parseDoc(docText).modules.find((m) => m.name === afterName);
+  if (!anchor || anchor.endEnd === 0) return appendModuleEdit(docText, name, body);
+  // 恒定先补一个换行：新块的 begin 标签必须独占行首（行首约束）
+  return { from: anchor.endEnd, to: anchor.endEnd, insert: `\n${makeModuleBlock(name, body)}` };
 }
 
-/** 启用模块：插入存档正文（可为空），去掉 enabled="false"。 */
-export function enableEdits(m: ModuleSeg, stored: string | undefined): Edit[] {
-  return [
-    { from: m.beginStart, to: m.beginEnd, insert: buildBeginTag(m.name, true) },
-    { from: m.bodyStart, to: m.bodyEnd, insert: ensureBodyNewline(stored ?? "") },
-  ];
-}
-
-/** 重命名模块：只改开标签中的 name 属性。 */
+/** 重命名模块：只改开标签中的 name 属性（仅启用态模块存在于文档中）。 */
 export function renameEdit(m: ModuleSeg, newName: string): Edit {
   return { from: m.beginStart, to: m.beginEnd, insert: buildBeginTag(newName, m.enabled) };
 }

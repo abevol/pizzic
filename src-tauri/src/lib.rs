@@ -102,7 +102,10 @@ fn write_file(app: AppHandle, path: String, text: String) -> Result<FileSnapshot
 }
 
 #[tauri::command]
-fn get_disabled_modules(state: State<AppState>, path: String) -> Result<HashMap<String, String>, String> {
+fn get_disabled_modules(
+    state: State<AppState>,
+    path: String,
+) -> Result<HashMap<String, store::ArchivedEntry>, String> {
     Ok(state.store.lock().unwrap().get(&path))
 }
 
@@ -112,8 +115,9 @@ fn set_disabled_module(
     path: String,
     name: String,
     content: Option<String>,
+    after: Option<String>,
 ) -> Result<(), String> {
-    state.store.lock().unwrap().set(&path, &name, content)
+    state.store.lock().unwrap().set(&path, &name, content, after)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

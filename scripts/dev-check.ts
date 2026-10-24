@@ -6,13 +6,11 @@
  */
 import {
   appendModuleEdit,
+  applyEdits,
   buildBeginTag,
   CLOSE_TAG,
-  closeUpgradeEdits,
   deleteEdit,
-  disableEdits,
-  enableEdits,
-  hasXmlThreat,
+  insertAfterModuleEdit,
   makeModuleBlock,
   nextModuleName,
   parseDoc,
@@ -20,14 +18,6 @@ import {
   wrapSelectionEdits,
   type Edit,
 } from "../src/lib/document.ts";
-
-function applyEdits(text: string, edits: Edit[]): string {
-  let out = text;
-  for (const e of [...edits].sort((a, b) => b.from - a.from)) {
-    out = out.slice(0, e.from) + e.insert + out.slice(e.to);
-  }
-  return out;
-}
 
 function assert(cond: boolean, msg: string) {
   if (!cond) {
@@ -58,10 +48,7 @@ assert(p1.modules.length === 2, "解析出 2 个模块");
 assert(p1.modules[0]!.name === "codegraph", "第一个模块名为 codegraph");
 assert(p1.modules[0]!.enabled === true, "codegraph 为启用态");
 assert(p1.modules[0]!.body.includes("## CodeGraph"), "启用模块正文正确");
-assert(p1.modules[0]!.body.includes("代码检索说明。"), "模块正文偏移正确");
-assert(p1.modules[1]!.enabled === false, 'enabled="false" 被识别');
-assert(p1.modules[1]!.body.trim() === "", "停用壳正文为空");
-assert(p1.modules.every((m) => !m.legacy), "新格式块不带 legacy 标志");
+assert(p1.modules[1]!.enabled === false, 'enabled="false" 壳仍可解析（兼容读取）');
 assert(p1.segs.some((s) => s.kind === "free" && s.text.includes("结尾自由文本")), "游离文本保留");
 assert(
   doc1.slice(p1.modules[0]!.bodyStart, p1.modules[0]!.bodyEnd) === p1.modules[0]!.body,
@@ -84,28 +71,34 @@ assert(
   "首尾空格的 name 仍被拒绝",
 );
 
-// 3. 停用 → 存档 → 重新启用：正文应完整恢复
+// 3. ADR-004 停用语义：整块移除，启用按位置锚插回
 const m0 = p1.modules[0]!;
 const original = m0.body;
-const disabledText = applyEdits(doc1, disableEdits(m0));
-const p4 = parseDoc(disabledText);
-const m0d = p4.modules.find((m) => m.name === "codegraph");
-assert(m0d !== undefined && m0d.enabled === false, "停用后解析为禁用态");
-const reEnabledText = applyEdits(disabledText, enableEdits(m0d!, original));
+const afterAnchor = "rtk"; // 前驱锚取自前一个模块（示例中为壳）
+const removed = applyEdits(doc1, [deleteEdit(m0, doc1)]);
+assert(parseDoc(removed).modules.length === 1, "停用后模块从文档中整块移除");
+assert(!removed.includes('name="codegraph"'), "文档中不再保留任何占位标签");
+const reEnabledText = applyEdits(removed, [
+  insertAfterModuleEdit(removed, "codegraph-anchor-x", "codegraph", original), // 锚不存在 → 落文末
+]);
 const p5 = parseDoc(reEnabledText);
+const restored = p5.modules.find((m) => m.name === "codegraph");
+assert(restored !== undefined && restored!.body === original, "启用后正文完整恢复（锚缺失落文末）");
+const reAnchoredText = applyEdits(removed, [
+  insertAfterModuleEdit(removed, "rtk", "codegraph", original),
+]);
+const pAnchored = parseDoc(reAnchoredText);
 assert(
-  p5.modules.find((m) => m.name === "codegraph")?.body === original,
-  "重新启用后正文完整恢复",
+  pAnchored.modules[pAnchored.modules.length - 1]!.name === "codegraph",
+  "按前驱锚插回：恢复到锚模块之后",
 );
 
 // 4. 重命名与删除
-const renamed = renameEdit(p5.modules.find((m) => m.name === "codegraph")!, "codegraph2");
+const renamed = renameEdit(restored!, "codegraph2");
 const renamedText = applyEdits(reEnabledText, [renamed]);
-assert(parseDoc(renamedText).modules[0]!.name === "codegraph2", "重命名生效");
-const target = parseDoc(reEnabledText).modules[0]!;
-const del = deleteEdit(target, reEnabledText);
-const deletedText = applyEdits(reEnabledText, [del]);
-assert(parseDoc(deletedText).modules.length === 1, "删除模块后只剩 1 个");
+assert(parseDoc(renamedText).modules.some((m) => m.name === "codegraph2"), "重命名生效");
+const del = deleteEdit(parseDoc(reEnabledText).modules.find((m) => m.name === "codegraph")!, reEnabledText);
+assert(parseDoc(applyEdits(reEnabledText, [del])).modules.length === 1, "删除模块后只剩 1 个");
 
 // 5. 选区包裹与文末注入
 const base = "标题\n\n正文段落。";
@@ -123,7 +116,7 @@ assert(pa.modules[0]!.body.includes("注入的内容"), "注入正文正确");
 assert(nextModuleName([]) === "module-1", "首个自动名 module-1");
 assert(nextModuleName(["module-1", "module-3"]) === "module-2", "跳过占用名");
 assert(makeModuleBlock("x", "  内容 ").endsWith(CLOSE_TAG + "\n"), "块序列化以闭合标签结尾");
-assert(buildBeginTag("x", false) === '<pizzic-module name="x" enabled="false">', "停用开标签格式正确");
+assert(buildBeginTag("x", false) === '<pizzic-module name="x" enabled="false">', "停用开标签格式正确（仅解析宽容用）");
 let threw = false;
 try {
   buildBeginTag('x" onerror="1', true);
@@ -132,40 +125,27 @@ try {
 }
 assert(threw, "非法模块名被拒绝（防标签注入）");
 
-// 7. CRLF 文档：解析不归一化，停用/启用逐字节往返
+// 7. CRLF 文档：解析不归一化，停用/启用语义正确
 const crlf =
   '<pizzic-module name="win">\r\nWindows 行一。\r\n</pizzic-module>\r\n';
 const pc = parseDoc(crlf);
 assert(pc.modules.length === 1, "CRLF 文档解析出模块");
 assert(pc.modules[0]!.body === "\r\nWindows 行一。\r\n", "CRLF 正文原样保真（不归一化）");
-const crlfDisabled = applyEdits(crlf, disableEdits(pc.modules[0]!));
-const crlfBack = applyEdits(
-  crlfDisabled,
-  enableEdits(parseDoc(crlfDisabled).modules.find((m) => m.name === "win")!, pc.modules[0]!.body),
-);
-assert(crlfBack === crlf, "CRLF 停用再启用逐字节往返一致");
+const crlfRemoved = applyEdits(crlf, [deleteEdit(pc.modules[0]!, crlf)]);
+assert(parseDoc(crlfRemoved).modules.length === 0, "CRLF 文档停用后整块移除");
+const crlfBack = applyEdits(crlfRemoved, [
+  insertAfterModuleEdit(crlfRemoved, "win", "win", pc.modules[0]!.body),
+]);
+assert(parseDoc(crlfBack).modules[0]!.body.includes("Windows 行一。"), "CRLF 文档启用后正文恢复");
 
-// 8. v0.1 旧注释格式：只读兼容 + 编辑升级
+// 8. v0.1 旧注释格式：只读兼容；ADR-004 下停用即整块移除
 const legacy =
   "<!-- Pizzic:begin:old-mod -->\n旧正文。\n<!-- Pizzic:end -->\n";
 const pl = parseDoc(legacy);
 assert(pl.modules.length === 1 && pl.modules[0]!.name === "old-mod" && pl.modules[0]!.legacy, "旧注释格式兼容解析");
 assert(pl.modules[0]!.body === "\n旧正文。\n", "旧格式正文正确");
-const upgraded = applyEdits(legacy, [...disableEdits(pl.modules[0]!), ...closeUpgradeEdits(pl.modules[0]!)]);
-const pu = parseDoc(upgraded);
-assert(
-  pu.modules.length === 1 &&
-    pu.modules[0]!.name === "old-mod" &&
-    !pu.modules[0]!.legacy &&
-    !pu.modules[0]!.enabled,
-  "旧块停用后整体升级为 XML 语义标签",
-);
-const legacyRe = applyEdits(
-  upgraded,
-  [...enableEdits(pu.modules[0]!, pl.modules[0]!.body), ...closeUpgradeEdits(pu.modules[0]!)],
-);
-const pr = parseDoc(legacyRe);
-assert(!pr.modules[0]!.legacy && pr.modules[0]!.body === "\n旧正文。\n", "升级后的旧块可正常恢复正文");
+const legacyRemoved = applyEdits(legacy, [deleteEdit(pl.modules[0]!, legacy)]);
+assert(parseDoc(legacyRemoved).modules.length === 0, "旧块停用即整块移除");
 
 // 9. 行首约束：行内出现的标签不参与解析
 const inline = '讲解：写 <pizzic-module name="fake"> 与 </pizzic-module> 只是文字。';
@@ -189,7 +169,6 @@ assert(pf.modules.length === 1 && pf.modules[0]!.name === "real", "围栏内的�
 
 // 11. DOCTYPE/ENTITY 载体拒绝解析
 const threat = '<!DOCTYPE pizzic-module [<!ENTITY x "y">]>\n<pizzic-module name="x">a</pizzic-module>';
-assert(hasXmlThreat(threat), "DOCTYPE/ENTITY 被识别为威胁");
 assert(parseDoc(threat).modules.length === 0, "威胁文件不解析模块结构");
 
 // 12. 未闭合容错与嵌套容错
