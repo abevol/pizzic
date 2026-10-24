@@ -1,12 +1,32 @@
-import { For, createMemo } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import type { TargetInfo } from "../lib/api";
 
+/** Phosphor 图标映射；未列出的 Agent 统一用 ph-robot。 */
 const AGENT_ICONS: Record<string, string> = {
   claude: "ph-sparkle",
   codex: "ph-terminal-window",
+  gemini: "ph-star-four",
+  agy: "ph-rocket",
   opencode: "ph-brackets",
+  deveco: "ph-cube",
   dsh: "ph-pulse",
+  goose: "ph-bird",
+  copilot: "ph-paper-plane-tilt",
+  crush: "ph-flame",
   zcode: "ph-lightning",
+  kimi: "ph-moon-stars",
+  alma: "ph-identification-card",
+  grok: "ph-x-logo",
+  droid: "ph-android-logo",
+  qoder: "ph-code",
+  "qoder-cn": "ph-code",
+  codebuddy: "ph-users-three",
+  fx: "ph-magic-wand",
+  "prime-agent": "ph-crown-simple",
+  stepcode: "ph-stairs",
+  atomcode: "ph-atom",
+  qwen: "ph-cloud",
+  reasonix: "ph-waveform",
 };
 
 function iconFor(t: TargetInfo): string {
@@ -29,8 +49,13 @@ export function Sidebar(props: {
   homeDir: string;
   onSelect(id: string): void;
 }) {
+  const [showMissing, setShowMissing] = createSignal(false);
   const shared = createMemo(() => props.targets.filter((t) => t.kind === "shared"));
+  const byName = (a: TargetInfo, b: TargetInfo) =>
+    a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
   const agents = createMemo(() => props.targets.filter((t) => t.kind === "agent"));
+  const existing = createMemo(() => agents().filter((t) => t.exists).sort(byName));
+  const missing = createMemo(() => agents().filter((t) => !t.exists).sort(byName));
 
   const item = (t: TargetInfo) => {
     const selected = () => props.currentId === t.id;
@@ -67,12 +92,12 @@ export function Sidebar(props: {
               >
                 {t.label}
               </span>
-              <span
-                title={t.exists ? "文件已创建" : "文件未创建"}
-                class={`size-[5px] shrink-0 rounded-full transition-all duration-500 ${
-                  t.exists ? "bg-mint/90 shadow-[0_0_6px_rgba(94,234,212,0.5)]" : "bg-white/[0.14]"
-                }`}
-              />
+              <Show when={t.exists}>
+                <span
+                  title="文件已创建"
+                  class="size-[5px] shrink-0 rounded-full bg-mint/90 shadow-[0_0_6px_rgba(94,234,212,0.5)]"
+                />
+              </Show>
             </span>
             <span class="mt-0.5 block truncate font-mono text-[10.5px] leading-4 text-[#59617A]">
               {shortPath(t.path, props.homeDir)}
@@ -99,15 +124,51 @@ export function Sidebar(props: {
           <span class="h-px flex-1 bg-gradient-to-r from-white/[0.09] to-transparent" />
         </div>
 
-        <div class="flex flex-col gap-1">
-          <For each={agents()}>
-            {(t, i) => (
-              <div class="animate-rise" style={{ "animation-delay": `${80 + i() * 55}ms` }}>
-                {item(t)}
-              </div>
-            )}
-          </For>
-        </div>
+        <Show
+          when={existing().length > 0}
+          fallback={
+            <p class="px-3 py-1.5 text-[11.5px] leading-relaxed text-[#4E5670]">
+              尚无 Agent 指令文件——从下方「未创建」中选择并创建。
+            </p>
+          }
+        >
+          <div class="flex flex-col gap-1">
+            <For each={existing()}>
+              {(t, i) => (
+                <div class="animate-rise" style={{ "animation-delay": `${80 + i() * 55}ms` }}>
+                  {item(t)}
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+
+        <Show when={missing().length > 0}>
+          <button
+            type="button"
+            class="group mt-3 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-all duration-300 ease-fluid hover:bg-white/[0.04]"
+            onClick={() => setShowMissing(!showMissing())}
+          >
+            <i
+              class={`ph-light ph-caret-right text-[11px] text-[#6E7690] transition-transform duration-500 ease-fluid ${
+                showMissing() ? "rotate-90" : ""
+              }`}
+            />
+            <span class="flex-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-[#59617A]">
+              未创建
+            </span>
+            <span class="rounded-full bg-white/[0.05] px-1.5 py-0.5 font-mono text-[9.5px] text-[#59617A]">
+              {missing().length}
+            </span>
+          </button>
+          <Show when={showMissing()}>
+            <div class="mt-1 flex flex-col gap-0.5 opacity-75">
+              <For each={missing()}>
+                {(t) => item(t)}
+              </For>
+            </div>
+          </Show>
+        </Show>
       </div>
     </aside>
   );

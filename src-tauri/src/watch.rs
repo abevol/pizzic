@@ -42,15 +42,17 @@ fn run(app: &AppHandle) -> notify::Result<()> {
         watcher.watch(&config, notify::RecursiveMode::NonRecursive)?;
     }
 
-    // (小写路径, 对外展示路径)
+    // (小写路径, 对外展示路径)：覆盖每个目标的全部候选文件
     let registry: Vec<(String, String)> = crate::targets::TARGETS
         .iter()
-        .map(|t| {
-            let p = crate::targets::resolve_path(t.rel);
-            (
-                p.to_string_lossy().to_lowercase(),
-                p.to_string_lossy().to_string(),
-            )
+        .flat_map(|t| {
+            t.rels.iter().map(|rel| {
+                let p = crate::targets::resolve_path(rel);
+                (
+                    p.to_string_lossy().to_lowercase(),
+                    p.to_string_lossy().to_string(),
+                )
+            })
         })
         .collect();
 

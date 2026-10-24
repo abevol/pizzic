@@ -150,3 +150,29 @@ CodeMirror 6 的 Text 存储层不保留 `\r`：实测无论 create 还是 dispa
 误删不可逆。因此存档只在明确的用户动作中增删：删除模块、删除停用存档、
 重命名迁移、启用恢复。`enabled="false"` 解析保持宽容（旧文件、手写壳可读，
 启用时一并移除壳），生成端不再产出。存档键仍为 文件路径 + 模块名，跨文件互不共享。
+
+## 10. 目标注册表与路径规则（源自 magpie 的 targetOf 清单）
+
+注册表含 1 个共享目标 + 30 个 Agent 目标。路径规则采集自 magpie
+（`internal/library/targets.go` 的 targetOf 与各 agent 定义），并做如下筛选：
+
+- **收录**：用户级指令文件路径固定的 Agent（Claude Code、Codex、Gemini CLI、
+  Antigravity、OpenCode、DevEco Code、MiMo Code、Pi、DSH、omp、OmO、Goose、
+  Copilot CLI、Crush、ZCode、Kimi Code、Alma、Devin CLI、Grok Build、Droid、
+  Qoder、Qoder CN、CodeBuddy Code、fx、Prime Agent、StepCode、jcode、AtomCode、
+  Qwen Code、Reasonix）。
+- **候选序列（firstThere）**：Agent 实际读取候选中第一个存在的文件（如 Devin
+  `AGENTS.md → AGENT.md`、CodeBuddy `CODEBUDDY.md → CODEBUDDY.mdc`）。注册表
+  每个目标持有候选数组：读取/监听/白名单覆盖全部候选，展示用第一个存在者。
+  避免「Agent 读 A、我们写 B」的错位。
+- **Override 即最高优先级候选**：codex/pi/omo/stepcode 支持 `AGENTS.override.md`
+  （存在时 Agent 读它而非主文件）。它就是候选序列的第一项——存在时我们编辑的
+  恰是 Agent 实际生效的文件，无需单独警示。与之配套，每个目标带 `create_rel`
+  （主指令文件）：候选全不存在时按它新建（override 不会凭空创建）。
+  Pi/OmO/Prime/StepCode 的 `AGENTS.MD`/`CLAUDE.MD` 大小写变体在 Windows 上
+  与同名小写文件相同，折叠不列；`CLAUDE.md` 兜底候选保留。
+- **排除**：Grok App（路径依赖 config.toml 解析，不固定）、WSL 变体（notify
+  对 `\\wsl.localhost` UNC 路径不可靠）、插件 Agent（路径动态声明）、无用户级
+  指令文件者（Cursor CLI、Zed、Cline 等）。
+- 路径白名单（第 4 节）自动覆盖全部候选；监听根（`~` 与 `~/.config`）覆盖
+  全部候选所在目录，无需扩根。

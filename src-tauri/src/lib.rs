@@ -36,10 +36,10 @@ fn list_targets() -> TargetsPayload {
     }
 }
 
-/// 所有命令只接受注册表中的路径：Webview 永远无法借此读取任意文件。
+/// 所有命令只接受注册表中的路径（含各目标的全部候选文件）：
+/// Webview 永远无法借此读取任意文件。
 fn resolve_registered(path: &str) -> Result<PathBuf, String> {
-    targets::find_by_path(path)
-        .map(|t| targets::resolve_path(t.rel))
+    targets::resolve_registered(path)
         .ok_or_else(|| format!("路径不在 Pizzic 注册表中: {path}"))
 }
 

@@ -30,16 +30,16 @@
 
 ### 多 Agent 指令文件
 
-默认注册（缺失文件可在界面内一键创建）：
+注册 **1 个共享目标 + 30 个 Agent 目标**（Claude Code、Codex、Gemini CLI、Antigravity、
+OpenCode、DevEco Code、MiMo Code、Pi、DSH、omp、OmO、Goose、Copilot CLI、Crush、
+ZCode、Kimi Code、Alma、Devin CLI、Grok Build、Droid、Qoder、Qoder CN、CodeBuddy Code、
+fx、Prime Agent、StepCode、jcode、AtomCode、Qwen Code、Reasonix）。路径规则采集自
+magpie 的 targetOf 清单：
 
-| 目标 | 路径 |
-| --- | --- |
-| 共享指令 | `~/.agents/AGENTS.md` |
-| Claude Code | `~/.claude/CLAUDE.md` |
-| Codex | `~/.codex/AGENTS.md` |
-| OpenCode | `~/.config/opencode/AGENTS.md` |
-| DSH | `~/.dsh/AGENTS.md` |
-| ZCode | `~/.zcode/AGENTS.md` |
+- 支持**候选序列**（firstThere）：Agent 读候选中第一个存在的文件（如 Devin
+  `AGENTS.md → AGENT.md`），读取/监听/白名单覆盖全部候选，创建按第一个候选；
+- 侧栏将**已存在**与**未创建**分组，未创建项折叠收纳，可在界面内一键创建；
+- 完整路径清单与筛选原则见 [docs/DESIGN.md](docs/DESIGN.md) 第 10 节。
 
 ### 实时变更监控
 
