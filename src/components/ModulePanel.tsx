@@ -23,6 +23,8 @@ export interface LibraryEntry {
   label: string;
   body: string;
   hasBody: boolean;
+  /** 条目来自共享文件的停用存档（而非文档中的启用模块） */
+  archived: boolean;
 }
 
 export function Toggle(props: { on: boolean; onChange(): void }) {
@@ -402,6 +404,9 @@ export function ModulePanel(props: {
                             </span>
                             <span class="block truncate font-mono text-[10px] text-[#59617A]">
                               {e.name}
+                              <Show when={e.archived}>
+                                <span class="text-[#4E5670]"> · 存档</span>
+                              </Show>
                             </span>
                           </span>
                           <Show

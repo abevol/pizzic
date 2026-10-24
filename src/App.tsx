@@ -148,10 +148,21 @@ export default function App() {
     try {
       const snap = await api.readFile(shared.path);
       const disabled = await api.getDisabled(shared.path);
+      // 库 = 共享文件中的启用模块 + 其存档中的停用模块（ADR-004：停用即不在文档中）
       const entries: LibraryEntry[] = parseDoc(snap.text).modules.map((m) => {
         const body = m.enabled ? m.body : (disabled[m.name]?.content ?? "");
-        return { name: m.name, label: moduleLabel(m), body, hasBody: body.trim() !== "" };
+        return { name: m.name, label: moduleLabel(m), body, hasBody: body.trim() !== "", archived: false };
       });
+      for (const [name, e] of Object.entries(disabled)) {
+        if (entries.some((x) => x.name === name)) continue; // 文档中的版本优先
+        entries.push({
+          name,
+          label: firstHeading(e.content) ?? name,
+          body: e.content,
+          hasBody: e.content.trim() !== "",
+          archived: true,
+        });
+      }
       setSharedLib(entries);
     } catch {
       setSharedLib([]);
