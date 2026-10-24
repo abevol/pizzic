@@ -4,6 +4,7 @@ import type { EditorView } from "@codemirror/view";
 import { api, type FileSnapshot, type TargetInfo } from "./lib/api";
 import {
   appendModuleEdit,
+  closeUpgradeEdits,
   deleteEdit,
   disableEdits,
   enableEdits,
@@ -30,8 +31,9 @@ function samePath(a: string, b: string): boolean {
 function starterContent(t: TargetInfo): string {
   const body =
     `这里是 ${t.label} 的第一个指令模块示例。\n\n` +
-    "由 `<!-- Pizzic:begin:模块名 -->` 与 `<!-- Pizzic:end -->` 标签包裹的段落是一个模块，" +
-    "可以在右侧面板单独启用或停用；停用后正文会存档在 Pizzic 中，随时可以恢复。";
+    "一对 pizzic-module 语义标签包裹的段落是一个模块：name 属性即模块名，" +
+    '写 enabled="false" 表示停用。可在右侧面板单独启用或停用，' +
+    "停用后正文会存档在 Pizzic 中，随时可以恢复。";
   return `# ${t.label} 指令\n\n${makeModuleBlock("welcome", body)}`;
 }
 
@@ -262,13 +264,13 @@ export default function App() {
     try {
       if (m.enabled) {
         await api.setDisabled(t.path, name, m.body);
-        view.dispatch({ changes: disableEdits(m) });
+        view.dispatch({ changes: [...disableEdits(m), ...closeUpgradeEdits(m)] });
         flash(`已停用 ${name}，正文已存档`);
       } else {
         const stored = archived()[name];
         if (stored === undefined) flash(`${name} 没有存档正文，将以空模块启用`, "warn");
         await api.setDisabled(t.path, name, null);
-        view.dispatch({ changes: enableEdits(m, stored) });
+        view.dispatch({ changes: [...enableEdits(m, stored), ...closeUpgradeEdits(m)] });
         flash(`已启用 ${name}`);
       }
     } catch (e) {
@@ -302,7 +304,7 @@ export default function App() {
     }
     const m = mods.find((x) => x.name === oldName);
     if (!m) return;
-    view.dispatch({ changes: [renameEdit(m, newName)] });
+    view.dispatch({ changes: [renameEdit(m, newName), ...closeUpgradeEdits(m)] });
     const stored = archived()[oldName];
     if (stored !== undefined) {
       try {
