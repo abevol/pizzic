@@ -109,18 +109,6 @@ export function Sidebar(props: {
           </For>
         </div>
       </div>
-
-      <div class="shrink-0 border-t border-white/[0.05] px-4 py-3">
-        <p class="font-mono text-[10px] leading-relaxed text-[#4E5670]">
-          <span class="text-[#77809A]">&lt;!--</span> Pizzic:begin:name{" "}
-          <span class="text-[#77809A]">--&gt;</span>
-          <br />
-          <span class="pl-2">模块正文…</span>
-          <br />
-          <span class="text-[#77809A]">&lt;!--</span> Pizzic:end{" "}
-          <span class="text-[#77809A]">--&gt;</span>
-        </p>
-      </div>
     </aside>
   );
 }
