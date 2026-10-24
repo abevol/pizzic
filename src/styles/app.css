@@ -1,0 +1,187 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Geist Sans", ui-sans-serif, system-ui, "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --color-ink-950: #07080b;
+  --color-ink-900: #0a0c10;
+  --color-ink-800: #10131a;
+  --color-ink-700: #171b24;
+
+  --color-accent: #a78bfa;
+  --color-accent-2: #c4b5fd;
+  --color-mint: #5eead4;
+
+  --ease-fluid: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --animate-rise: rise 0.7s cubic-bezier(0.32, 0.72, 0, 1) both;
+  --animate-fadein: fadein 0.6s cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    filter: blur(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes fadein {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink-950);
+  color: #c9ceda;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+input,
+.cm-editor .cm-content {
+  user-select: text;
+}
+
+/* ————— 嵌套机壳（Double-Bezel） ————— */
+
+/* 侧栏 / 面板：一层玻璃卡 */
+.shell {
+  border-radius: 1.35rem;
+  background: rgba(255, 255, 255, 0.032);
+  outline: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.05),
+    0 24px 60px -32px rgba(0, 0, 0, 0.8);
+}
+
+/* 弹窗等强调卡：机壳 + 内芯两层 */
+.double-bezel {
+  padding: 6px;
+  border-radius: 1.6rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+  outline: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 40px 90px -30px rgba(0, 0, 0, 0.9),
+    inset 0 1px 1px rgba(255, 255, 255, 0.06);
+}
+
+/* 编辑器：外壳托着内芯，同心圆角 */
+.editor-shell {
+  padding: 5px;
+  border-radius: 1.35rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.018));
+  outline: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 30px 80px -36px rgba(0, 0, 0, 0.85),
+    inset 0 1px 1px rgba(255, 255, 255, 0.05);
+}
+
+.editor-core {
+  border-radius: calc(1.35rem - 5px);
+  background: #0a0c11;
+  outline: 1px solid rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+/* 胶片噪点（仅固定层） */
+.noise {
+  opacity: 0.028;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ————— CodeMirror 模块装饰 ————— */
+
+.pz-hue-0 { --pz-tint: rgba(167, 139, 250, 0.055); --pz-rule: rgba(167, 139, 250, 0.42); }
+.pz-hue-1 { --pz-tint: rgba(94, 234, 212, 0.05); --pz-rule: rgba(94, 234, 212, 0.36); }
+.pz-hue-2 { --pz-tint: rgba(252, 211, 77, 0.05); --pz-rule: rgba(252, 211, 77, 0.36); }
+.pz-hue-3 { --pz-tint: rgba(251, 113, 133, 0.05); --pz-rule: rgba(251, 113, 133, 0.36); }
+.pz-hue-4 { --pz-tint: rgba(125, 211, 252, 0.05); --pz-rule: rgba(125, 211, 252, 0.36); }
+.pz-hue-5 { --pz-tint: rgba(190, 242, 100, 0.045); --pz-rule: rgba(190, 242, 100, 0.34); }
+
+.pz-mod-head {
+  background: linear-gradient(90deg, var(--pz-tint), transparent 78%);
+  box-shadow: inset 2px 0 0 var(--pz-rule);
+}
+
+.pz-mod-tail {
+  box-shadow: inset 2px 0 0 transparent;
+  background: linear-gradient(90deg, transparent, transparent);
+}
+
+.pz-mod-body {
+  background: var(--pz-tint);
+  box-shadow: inset 2px 0 0 var(--pz-rule);
+}
+
+.pz-tag {
+  color: #525a73;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.pz-tag-off {
+  color: #3e4560;
+}
+
+.pz-off-row {
+  padding: 3px 0 3px 28px;
+}
+
+.pz-off-chip {
+  display: inline-block;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: #8a91a6;
+  background: rgba(255, 255, 255, 0.045);
+  outline: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 3px 12px;
+}
+
+/* ————— 滚动条 ————— */
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.17);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
