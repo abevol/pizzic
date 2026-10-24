@@ -1,8 +1,24 @@
 @import "tailwindcss";
 
+/*
+ * Geist Sans 自带 CJK 标点字形，但只有窄尺寸（U+FF0C 前进宽度 0.203em，
+ * 正常全角应为 1em）；而 @fontsource 的 @font-face 未声明 unicode-range，
+ * 浏览器会把「，」「（」等从字体链前面抢走，汉字才回退到雅黑，于是标点看起来
+ * 是半角且紧贴后文。把这些码位显式指向系统中文字体，让标点与汉字同源，
+ * 保持全角排印。系统中文字体都不可用时自然回落，无副作用。
+ */
+@font-face {
+  font-family: "Pizzic CJK Punct";
+  src: local("Microsoft YaHei UI"), local("Microsoft YaHei"), local("PingFang SC"),
+    local("Noto Sans CJK SC"), local("Source Han Sans SC");
+  unicode-range: U+3000-303F, U+FE30-FE4F, U+FF00-FFEF;
+}
+
 @theme {
-  --font-sans: "Geist Sans", ui-sans-serif, system-ui, "Microsoft YaHei UI", sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --font-sans: "Pizzic CJK Punct", "Geist Sans", ui-sans-serif, system-ui,
+    "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Pizzic CJK Punct", "Geist Mono", ui-monospace, "Cascadia Mono",
+    Consolas, "Microsoft YaHei UI", monospace;
 
   --color-ink-950: #07080b;
   --color-ink-900: #0a0c10;
