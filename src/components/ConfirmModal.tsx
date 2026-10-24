@@ -4,6 +4,8 @@ export interface ConfirmSpec {
   title: string;
   body: string;
   confirmText?: string;
+  /** 取消位文案；默认「取消」。用于表达「保留旧文件」这类非否定语义。 */
+  cancelText?: string;
   danger?: boolean;
   onConfirm(): void;
 }
@@ -41,7 +43,9 @@ export function ConfirmModal(props: { spec: ConfirmSpec | null; onCancel(): void
                 </span>
                 <div class="min-w-0">
                   <h2 class="text-[15px] font-semibold text-[#EDEFF7]">{spec().title}</h2>
-                  <p class="mt-1.5 text-[12.5px] leading-relaxed text-[#8A91A6]">{spec().body}</p>
+                  <p class="mt-1.5 whitespace-pre-line text-[12.5px] leading-relaxed text-[#8A91A6]">
+                    {spec().body}
+                  </p>
                 </div>
               </div>
               <div class="mt-6 flex justify-end gap-2">
@@ -50,7 +54,7 @@ export function ConfirmModal(props: { spec: ConfirmSpec | null; onCancel(): void
                   onClick={props.onCancel}
                   class="h-9 rounded-full px-5 text-[12.5px] text-[#8A91A6] transition-all duration-500 ease-fluid hover:bg-white/[0.06] hover:text-[#D6DAE5] active:scale-[0.97]"
                 >
-                  取消
+                  {spec().cancelText ?? "取消"}
                 </button>
                 <button
                   type="button"

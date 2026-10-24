@@ -1,3 +1,4 @@
+mod shared;
 mod store;
 mod targets;
 mod watch;
@@ -5,7 +6,7 @@ mod watch;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 use tauri::{AppHandle, Manager, State};
@@ -14,6 +15,8 @@ pub struct AppState {
     /// 写入后记录的（路径 → mtime），用于抑制监听器对自身写入的回声。
     pub suppress: Mutex<HashMap<String, SystemTime>>,
     pub store: Mutex<store::Store>,
+    /// 本次启动是否发生共享指令迁移：随首个 `list_targets` 一次性投递。
+    pub migration: Mutex<Option<shared::MigrationInfo>>,
 }
 
 #[derive(Serialize)]
@@ -23,16 +26,28 @@ pub struct FileSnapshot {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TargetsPayload {
     pub home: String,
     pub targets: Vec<targets::TargetInfo>,
+    pub migration: Option<shared::MigrationInfo>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkOutcome {
+    /// 本次是否顺带创建了原本缺失的共享指令文件。
+    pub created_shared: bool,
+    /// 原普通指令文件是否已被移入回收站（改指向已有链接时为 false）。
+    pub trashed_original: bool,
 }
 
 #[tauri::command]
-fn list_targets() -> TargetsPayload {
+fn list_targets(state: State<AppState>) -> TargetsPayload {
     TargetsPayload {
         home: targets::home().to_string_lossy().to_string(),
         targets: targets::TARGETS.iter().map(targets::info).collect(),
+        migration: state.migration.lock().unwrap().take(),
     }
 }
 
@@ -43,7 +58,7 @@ fn resolve_registered(path: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("路径不在 Pizzic 注册表中: {path}"))
 }
 
-fn mtime_millis(p: &std::path::Path) -> Option<u64> {
+fn mtime_millis(p: &Path) -> Option<u64> {
     std::fs::metadata(p)
         .ok()?
         .modified()
@@ -53,9 +68,25 @@ fn mtime_millis(p: &std::path::Path) -> Option<u64> {
         .map(|d| d.as_millis() as u64)
 }
 
+fn is_symlink(p: &Path) -> bool {
+    std::fs::symlink_metadata(p)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// 链接是否指向私有共享指令文件（允许经由其他链接、相对目标、`..` 到达）。
+fn link_points_to_shared(p: &Path) -> bool {
+    shared::link_points_to(p, &shared::shared_path())
+}
+
 #[tauri::command]
 fn read_file(path: String) -> Result<FileSnapshot, String> {
     let p = resolve_registered(&path)?;
+    // 白名单只约束链接路径本身；若在注册表路径上放一个指向任意文件的链接，
+    // 跟随读取就等于绕过白名单。只有共享指令这一个安全目标允许穿透。
+    if is_symlink(&p) && !link_points_to_shared(&p) {
+        return Err("符号链接目标不是共享指令文件，Pizzic 不读取其内容".to_string());
+    }
     let text = std::fs::read_to_string(&p).map_err(|e| format!("读取失败: {e}"))?;
     Ok(FileSnapshot {
         text,
@@ -66,6 +97,10 @@ fn read_file(path: String) -> Result<FileSnapshot, String> {
 #[tauri::command]
 fn write_file(app: AppHandle, path: String, text: String) -> Result<FileSnapshot, String> {
     let p = resolve_registered(&path)?;
+    // 符号链接只读：写入会穿透链接改到目标文件（共享指令或任意外部文件）。
+    if is_symlink(&p) {
+        return Err("目标文件是符号链接，Pizzic 不会写入链接".to_string());
+    }
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     }
@@ -101,6 +136,44 @@ fn write_file(app: AppHandle, path: String, text: String) -> Result<FileSnapshot
     })
 }
 
+/// 把注册表路径变成指向私有共享指令文件的符号链接。
+///
+/// 同一个操作覆盖三种入口：不存在的路径直接建链接；普通文件先移入回收站
+/// （可还原）再替换；指向别处的链接改指向。三种形态的差异只在原文件处理，
+/// 落盘方式一致（临链 + rename 就位），转换不留下不可逆的数据损失。
+#[tauri::command]
+fn link_to_shared(path: String) -> Result<LinkOutcome, String> {
+    let p = resolve_registered(&path)?;
+    let shared = shared::shared_path();
+    if targets::same_literal_path(&p, &shared) {
+        return Err("共享指令文件不能链接到自身".to_string());
+    }
+    let created_shared = shared::ensure_shared_file()?;
+    let trashed_original = shared::link_path(&p, &shared)?;
+    Ok(LinkOutcome {
+        created_shared,
+        trashed_original,
+    })
+}
+
+/// 删除目标路径本身（移入回收站）：链接只删链接，普通文件删文件；
+/// 目标文件与停用存档都不动。
+#[tauri::command]
+fn delete_target(path: String) -> Result<(), String> {
+    let p = resolve_registered(&path)?;
+    shared::trash_path(&p)
+}
+
+/// 删除迁移前的旧共享指令文件（同样进回收站）。路径写死，不接受前端参数。
+#[tauri::command]
+fn delete_legacy_shared() -> Result<(), String> {
+    let p = shared::legacy_shared_path();
+    match std::fs::symlink_metadata(&p) {
+        Ok(_) => shared::trash_path(&p),
+        Err(_) => Ok(()),
+    }
+}
+
 #[tauri::command]
 fn get_disabled_modules(
     state: State<AppState>,
@@ -129,9 +202,13 @@ pub fn run() {
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("pizzic"));
             std::fs::create_dir_all(&config_dir).ok();
+            let mut store = store::Store::load(&config_dir);
+            // 共享指令在监听启动前就位：迁移复制、空白补建或保留既有文件。
+            let migration = shared::bootstrap(&mut store);
             app.manage(AppState {
                 suppress: Mutex::new(HashMap::new()),
-                store: Mutex::new(store::Store::load(&config_dir)),
+                store: Mutex::new(store),
+                migration: Mutex::new(migration),
             });
             watch::start(app.handle().clone());
             Ok(())
@@ -140,6 +217,9 @@ pub fn run() {
             list_targets,
             read_file,
             write_file,
+            link_to_shared,
+            delete_target,
+            delete_legacy_shared,
             get_disabled_modules,
             set_disabled_module
         ])

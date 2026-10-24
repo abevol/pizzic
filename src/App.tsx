@@ -1,7 +1,13 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import type { EditorView } from "@codemirror/view";
-import { api, type ArchivedEntry, type FileSnapshot, type TargetInfo } from "./lib/api";
+import {
+  api,
+  type ArchivedEntry,
+  type FileSnapshot,
+  type MigrationInfo,
+  type TargetInfo,
+} from "./lib/api";
 import {
   appendModuleEdit,
   applyEdits,
@@ -17,7 +23,7 @@ import {
   type Edit,
   type ModuleSeg,
 } from "./lib/document";
-import { createEditor, replaceDoc } from "./lib/editor";
+import { createEditor, replaceDoc, setReadOnly } from "./lib/editor";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar, shortPath } from "./components/Sidebar";
 import { ModulePanel, type ArchivedModule, type LibraryEntry, type PanelModule } from "./components/ModulePanel";
@@ -51,7 +57,8 @@ export default function App() {
   const [archived, setArchived] = createSignal<Record<string, ArchivedEntry>>({});
   const [modules, setModules] = createSignal<ModuleSeg[]>([]);
   const [hasSelection, setHasSelection] = createSignal(false);
-  const [external, setExternal] = createSignal(false);
+  /** 外部冲突：conflict = 普通文件被改动且本地有未保存修改；link = 文件已变为符号链接。 */
+  const [externalMode, setExternalMode] = createSignal<"conflict" | "link" | null>(null);
   const [status, setStatus] = createSignal<StatusFlash | null>(null);
   const [stats, setStats] = createSignal({ lines: 0, chars: 0 });
   const [sharedLib, setSharedLib] = createSignal<LibraryEntry[] | null>(null);
@@ -61,13 +68,27 @@ export default function App() {
 
   let editorHost!: HTMLDivElement;
   let view: EditorView | null = null;
-  let loadedPath = "";
   let pendingSelect: string | null = null;
+  let pendingMigration: MigrationInfo | null = null;
+  /** 编辑器当前内容的来源形态：聚焦刷新时据此发现「生效路径/形态变了」。 */
+  let loadedShape: { id: string; path: string; exists: boolean; isLink: boolean } | null = null;
+  let loadSeq = 0;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   const unlisteners: Array<() => void> = [];
 
   const current = createMemo(() => targets().find((t) => t.id === currentId()) ?? null);
   const currentIsShared = createMemo(() => current()?.kind === "shared");
+  const isReadOnly = createMemo(() => current()?.isLink === true);
+  const linkIsBroken = createMemo(() => current()?.isLink === true && !current()!.linkTargetExists);
+  const linkIsForeign = createMemo(() => current()?.isLink === true && !current()!.linkTargetIsShared);
+  /** 「只读」标签的提示：说明只读原因与去哪里改内容。 */
+  const readonlyHint = createMemo(() => {
+    const t = current();
+    if (!t?.isLink) return "";
+    if (!t.linkTargetExists) return "链接目标不存在";
+    if (t.linkTargetIsShared) return "该文件链接至共享指令文件，请进入「共享指令」修改文件内容";
+    return "该文件链接至非共享指令文件，Pizzic 不会加载其内容";
+  });
   const panelModules = createMemo<PanelModule[]>(() =>
     modules().map((m) => ({
       name: m.name,
@@ -134,6 +155,8 @@ export default function App() {
       const payload = await api.listTargets();
       setHomeDir(payload.home);
       setTargets(payload.targets);
+      // 迁移信息只投递一次；留给 onMount 弹框，不在这里打断刷新流程。
+      if (payload.migration) pendingMigration = payload.migration;
     } catch (e) {
       flash(String(e), "warn");
     }
@@ -141,7 +164,7 @@ export default function App() {
 
   async function loadSharedLib() {
     const shared = targets().find((t) => t.kind === "shared");
-    if (!shared || !shared.exists || currentIsShared()) {
+    if (!shared || !shared.exists || currentIsShared() || isReadOnly()) {
       setSharedLib([]);
       return;
     }
@@ -169,36 +192,77 @@ export default function App() {
     }
   }
 
+  /** 清空编辑器为「无内容」形态（文件不存在、悬空链接、不可展示的外链）。 */
+  function clearView() {
+    if (!view) return;
+    setDisk(null);
+    setDirty(false);
+    setArchived({});
+    setLineEnding(null);
+    setEncoding(null);
+    replaceDoc(view, "");
+  }
+
+  /**
+   * 载入目标。符号链接分三类：
+   * - 指向共享指令且目标可读 → 读入其内容（只读预览）；
+   * - 指向其他文件 → 不读取内容（保持「Webview 无法借此读取任意文件」的白名单不变量）；
+   * - 目标缺失 → 空内容，由横幅给出修复动作。
+   */
   async function doLoad(t: TargetInfo) {
     if (!view) return;
+    const seq = ++loadSeq;
     setCurrentId(t.id);
+    setExternalMode(null);
+    loadedShape = { id: t.id, path: t.path, exists: t.exists, isLink: t.isLink };
+
     if (!t.exists) {
-      loadedPath = "";
-      setDisk(null);
-      setDirty(false);
-      setExternal(false);
-      setModules([]);
-      setStats({ lines: 0, chars: 0 });
-      setLineEnding(null);
-      setEncoding(null);
-      replaceDoc(view, "");
+      clearView();
       try {
-        setArchived(await api.getDisabled(t.path));
+        const archived = await api.getDisabled(t.path);
+        if (seq !== loadSeq) return;
+        setArchived(archived);
       } catch {
+        if (seq !== loadSeq) return;
         setArchived({});
       }
       void loadSharedLib();
       return;
     }
+
+    if (t.isLink) {
+      setArchived({});
+      if (t.linkTargetIsShared && t.linkTargetExists) {
+        try {
+          const snap = await api.readFile(t.path);
+          if (seq !== loadSeq) return;
+          setDisk(snap);
+          setDirty(false);
+          applySnapshot(snap);
+        } catch (e) {
+          if (seq !== loadSeq) return;
+          clearView();
+          flash(String(e), "warn");
+        }
+      } else {
+        clearView();
+      }
+      void loadSharedLib();
+      return;
+    }
+
     try {
       const snap = await api.readFile(t.path);
-      loadedPath = t.path;
+      if (seq !== loadSeq) return;
       setDisk(snap);
       setDirty(false);
-      setExternal(false);
-      setArchived(await api.getDisabled(t.path));
       applySnapshot(snap);
+      const archived = await api.getDisabled(t.path);
+      if (seq !== loadSeq) return;
+      setArchived(archived);
     } catch (e) {
+      if (seq !== loadSeq) return;
+      clearView();
       flash(String(e), "warn");
     }
     void loadSharedLib();
@@ -224,22 +288,28 @@ export default function App() {
     if (t) await doLoad(t);
   }
 
-  async function save() {
+  /** 返回是否真的落盘，转换前需要它来决定是否继续。 */
+  async function save(): Promise<boolean> {
     const t = current();
-    if (!t || !view) return;
+    if (!t || !view) return false;
+    if (t.isLink) {
+      flash("符号链接只读，无法保存", "warn");
+      return false;
+    }
     // 编辑器内部是 LF；写盘前按文件实际换行模式还原，保持磁盘文件字节形态。
     const editorText = view.state.doc.toString();
     const text = lineEnding() === "CRLF" ? editorText.replace(/\r?\n/g, "\r\n") : editorText;
     try {
       const snap = await api.writeFile(t.path, text);
-      loadedPath = t.path;
       setDisk(snap);
       setDirty(false);
-      setExternal(false);
+      setExternalMode(null);
       flash(`已保存 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`);
-      void refreshTargets();
+      await refreshTargets();
+      return true;
     } catch (e) {
       flash(String(e), "warn");
+      return false;
     }
   }
 
@@ -249,7 +319,7 @@ export default function App() {
     try {
       const snap = await api.writeFile(t.path, starterContent(t));
       await refreshTargets();
-      loadedPath = t.path;
+      loadedShape = { id: t.id, path: t.path, exists: true, isLink: false };
       setDisk(snap);
       setDirty(false);
       applySnapshot(snap);
@@ -260,37 +330,169 @@ export default function App() {
     }
   }
 
+  /**
+   * 在空态为缺失的共享指令补内容。只在链接目标是共享文件且悬空时触达：
+   * 建空白文件（不写示例模块），随后重载当前视图。
+   */
+  async function createSharedFile() {
+    const shared = targets().find((x) => x.kind === "shared");
+    if (!shared) return;
+    if (shared.isLink) {
+      flash("共享指令文件本身是符号链接，请先在侧栏删除该链接", "warn");
+      return;
+    }
+    try {
+      await api.writeFile(shared.path, "");
+      await refreshTargets();
+      const t = current();
+      const updated = t ? targets().find((x) => x.id === t.id) : undefined;
+      if (updated) await doLoad(updated);
+      flash("已创建共享指令文件");
+    } catch (e) {
+      flash(String(e), "warn");
+    }
+  }
+
+  /**
+   * 转链接/改指向的唯一入口：不存在 → 直接建；普通文件 → 危险确认（原文件
+   * 移入回收站）；指向别处的链接 → 普通确认。指向共享且可读的链接无需动作。
+   */
+  function requestLink(t: TargetInfo) {
+    if (t.kind === "shared") return;
+    if (!t.exists) {
+      void runLink(t);
+      return;
+    }
+    if (t.isLink && t.linkTargetIsShared) return;
+    const shared = targets().find((x) => x.kind === "shared");
+    if (t.isLink) {
+      setConfirm({
+        title: "改指向共享指令",
+        body: `该符号链接当前指向 ${
+          t.linkTarget ? shortPath(t.linkTarget, homeDir()) : "未知目标"
+        }，将改为指向 ${shared ? shortPath(shared.path, homeDir()) : "共享指令文件"}。原目标文件本身不受影响。`,
+        confirmText: "改指向",
+        onConfirm: () => void runLink(t),
+      });
+      return;
+    }
+    const dirtyNow = current()?.id === t.id && dirty();
+    setConfirm({
+      title: "转换为符号链接",
+      body:
+        `「${t.label}」的指令文件将被替换为指向共享指令文件的符号链接` +
+        `（内容与「共享指令」始终保持一致），当前指令文件将被移入到回收站。` +
+        (dirtyNow ? "\n当前未保存的修改会先保存，再随原文件移入回收站。" : ""),
+      confirmText: "转换",
+      danger: true,
+      onConfirm: () => void runLink(t),
+    });
+  }
+
+  async function runLink(t: TargetInfo) {
+    const wasCurrent = currentId() === t.id;
+    try {
+      // 未保存内容先落盘，随原文件一起进回收站，内容不会丢。
+      if (wasCurrent && dirty() && !(await save())) return;
+      const outcome = await api.linkToShared(t.path);
+      await refreshTargets();
+      const updated = targets().find((x) => x.id === t.id);
+      if (wasCurrent && updated) await doLoad(updated);
+      const notes = [`${t.label} 已指向共享指令`];
+      if (outcome.createdShared) notes.push("并补建了空白共享指令文件");
+      if (outcome.trashedOriginal) notes.push("原指令文件已移入回收站");
+      flash(notes.join("，"));
+    } catch (e) {
+      flash(String(e), "warn");
+    }
+  }
+
+  /** 删除按钮的确认策略：链接直接删（只删链接），普通文件危险确认。 */
+  function requestDelete(t: TargetInfo) {
+    if (!t.exists) return;
+    if (t.isLink) {
+      void runDelete(t);
+      return;
+    }
+    const dirtyNow = current()?.id === t.id && dirty();
+    setConfirm({
+      title: "删除指令文件",
+      body: `「${t.label}」的指令文件将被移入到回收站。${
+        dirtyNow ? "\n当前未保存的修改会一并丢弃。" : ""
+      }`,
+      confirmText: "移入回收站",
+      danger: true,
+      onConfirm: () => void runDelete(t),
+    });
+  }
+
+  async function runDelete(t: TargetInfo) {
+    const wasCurrent = currentId() === t.id;
+    try {
+      await api.deleteTarget(t.path);
+      await refreshTargets();
+      const updated = targets().find((x) => x.id === t.id);
+      if (wasCurrent && updated) await doLoad(updated);
+      flash(
+        t.isLink
+          ? `已删除符号链接 ${t.label}`
+          : `已将 ${t.label} 的指令文件移入回收站`,
+      );
+    } catch (e) {
+      flash(String(e), "warn");
+    }
+  }
+
+  /**
+   * 窗口聚焦时的形态兜底：监听事件可能被错过（应用在后台、事件过滤），
+   * 只要「已加载形态」与磁盘现状不符就按同一套语义处置：
+   * 有未保存修改 → 横幅（链接不给覆盖入口）；否则重新载入。
+   */
+  async function reconcileShape() {
+    const t = targets().find((x) => x.id === currentId());
+    if (!t || !loadedShape || loadedShape.id !== t.id) return;
+    if (
+      t.path === loadedShape.path &&
+      t.exists === loadedShape.exists &&
+      t.isLink === loadedShape.isLink
+    ) {
+      return;
+    }
+    if (dirty()) {
+      setExternalMode(t.isLink ? "link" : "conflict");
+    } else {
+      await doLoad(t);
+    }
+  }
+
   function reloadFromDisk() {
     const t = current();
     if (t) void doLoad(t);
   }
 
+  /**
+   * 外部变更统一处理：先刷新目标状态，再按**刷新后**的形态决定编辑器的去留。
+   * 本地有未保存修改时绝不动缓冲区，只切换横幅语义（符号链接下不给覆盖入口）。
+   */
   async function onExternal(changed: string) {
-    void refreshTargets();
-    const t = current();
-    if (t && samePath(changed, t.path)) {
-      if (dirty()) {
-        setExternal(true);
-        return;
-      }
-      if (t.exists && view) {
-        try {
-          const snap = await api.readFile(t.path);
-          // 自写回声兜底：磁盘内容与编辑器语义一致（EOL 归一化后相同）则不打扰。
-          if (normalizeEOL(view.state.doc.toString()) === normalizeEOL(snap.text)) {
-            setDisk(snap);
-            return;
-          }
-          setDisk(snap);
-          applySnapshot(snap);
-          flash("检测到外部修改，已重新加载");
-        } catch {
-          /* 文件可能刚被删除，等待下一次刷新 */
+    await refreshTargets();
+    const t = targets().find((x) => x.id === currentId());
+    const shared = targets().find((x) => x.kind === "shared");
+    const touchedBy = (target: TargetInfo) =>
+      target.paths.some((p) => samePath(p, changed));
+
+    if (t && view) {
+      const isCurrent = touchedBy(t) || (t.isLink && t.linkTargetIsShared && shared && touchedBy(shared));
+      if (isCurrent) {
+        if (dirty()) {
+          setExternalMode(t.isLink ? "link" : "conflict");
+        } else {
+          await doLoad(t);
+          if (t.isLink && t.linkTargetIsShared && t.linkTargetExists) flash("共享指令已更新");
         }
       }
     }
-    const shared = targets().find((x) => x.kind === "shared");
-    if (shared && samePath(changed, shared.path)) void loadSharedLib();
+    if (shared && touchedBy(shared)) void loadSharedLib();
   }
 
   /**
@@ -441,6 +643,11 @@ export default function App() {
     view.focus();
   }
 
+  // 只读随当前目标形态切换：链接一律只读，普通文件恢复可编辑。
+  createEffect(() => {
+    if (view) setReadOnly(view, isReadOnly());
+  });
+
   onMount(async () => {
     view = createEditor(editorHost, {
       onDocChanged: syncFromEditor,
@@ -450,11 +657,38 @@ export default function App() {
     await refreshTargets();
     unlisteners.push(
       await listen<{ path: string }>("pizzic:file-changed", (e) => void onExternal(e.payload.path)),
-      await listen("tauri://focus", () => void refreshTargets()),
+      await listen("tauri://focus", async () => {
+        await refreshTargets();
+        await reconcileShape();
+      }),
     );
     const first = targets().find((t) => t.id === "shared") ?? targets()[0];
     if (first) await doLoad(first);
+
+    const mig = pendingMigration;
+    pendingMigration = null;
+    if (mig) {
+      setConfirm({
+        title: "旧共享指令已迁移",
+        body:
+          `已将 ${shortPath(mig.legacyPath, homeDir())} 复制到 ${shortPath(mig.sharedPath, homeDir())}\n` +
+          "为防止意外冲突，建议删除旧文件。",
+        confirmText: "删除旧文件",
+        cancelText: "保留旧文件",
+        danger: true,
+        onConfirm: () => void removeLegacy(),
+      });
+    }
   });
+
+  async function removeLegacy() {
+    try {
+      await api.deleteLegacyShared();
+      flash("已将旧共享指令文件移入回收站");
+    } catch (e) {
+      flash(String(e), "warn");
+    }
+  }
 
   onCleanup(() => {
     unlisteners.forEach((u) => u());
@@ -477,6 +711,14 @@ export default function App() {
           currentId={currentId()}
           homeDir={homeDir()}
           onSelect={(id) => void selectTarget(id)}
+          onDelete={(id) => {
+            const t = targets().find((x) => x.id === id);
+            if (t) requestDelete(t);
+          }}
+          onLink={(id) => {
+            const t = targets().find((x) => x.id === id);
+            if (t) requestLink(t);
+          }}
         />
 
         <section class="flex min-h-0 min-w-0 flex-col gap-2.5">
@@ -491,11 +733,37 @@ export default function App() {
                 </span>
                 <Show when={current()}>
                   <span
-                    class="hidden min-w-0 truncate font-mono text-[10.5px] text-[#59617A] md:block"
+                    class="hidden max-w-[40%] min-w-0 truncate font-mono text-[10.5px] text-[#59617A] md:block"
                     title={current()!.path}
                   >
                     {shortPath(current()!.path, homeDir())}
                   </span>
+                  <Show when={current()!.isLink}>
+                    <i
+                      class={`ph-light shrink-0 text-[13px] ${
+                        current()!.linkTargetExists && current()!.linkTargetIsShared
+                          ? "ph-link text-mint/90"
+                          : "ph-link-break text-[#FCD34D]"
+                      }`}
+                      title="符号链接"
+                    />
+                    <span
+                      class={`hidden max-w-[32%] min-w-0 truncate font-mono text-[10.5px] md:block ${
+                        current()!.linkTargetExists && current()!.linkTargetIsShared
+                          ? "text-mint/80"
+                          : "text-[#D6B36A]"
+                      }`}
+                      title={current()!.linkTarget ?? "未知目标"}
+                    >
+                      {shortPath(current()!.linkTarget ?? "", homeDir())}
+                    </span>
+                    <span
+                      class="shrink-0 cursor-help rounded-full bg-[#A78BFA]/12 px-2 py-0.5 text-[9.5px] font-medium tracking-wide text-[#C4B5FD] ring-1 ring-[#A78BFA]/25"
+                      title={readonlyHint()}
+                    >
+                      只读
+                    </span>
+                  </Show>
                 </Show>
                 <span class="flex-1" />
                 <Show when={current()?.exists}>
@@ -507,29 +775,104 @@ export default function App() {
                   >
                     <i class="ph-light ph-arrows-clockwise text-[14px]" />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => void save()}
-                    disabled={!dirty()}
-                    class={`flex h-8 items-center gap-2 rounded-full pl-4 pr-1.5 text-[12px] font-medium transition-all duration-500 ease-fluid active:scale-[0.97] disabled:cursor-default disabled:opacity-40 disabled:active:scale-100 ${
-                      dirty()
-                        ? "bg-gradient-to-r from-[#8B5CF6]/85 to-[#6EE7D8]/80 text-ink-950 shadow-[0_4px_18px_-6px_rgba(139,92,246,0.7)] hover:brightness-110"
-                        : "bg-white/[0.05] text-[#8A91A6] ring-1 ring-white/[0.08]"
-                    }`}
-                  >
-                    保存
-                    <span
-                      class={`grid h-[22px] place-items-center rounded-full px-2 font-mono text-[9.5px] tracking-wide ${
-                        dirty() ? "bg-ink-950/25 text-ink-950/80" : "bg-white/[0.06] text-[#77809A]"
+                  <Show when={!current()!.isLink}>
+                    <button
+                      type="button"
+                      onClick={() => void save()}
+                      disabled={!dirty()}
+                      class={`flex h-8 items-center gap-2 rounded-full pl-4 pr-1.5 text-[12px] font-medium transition-all duration-500 ease-fluid active:scale-[0.97] disabled:cursor-default disabled:opacity-40 disabled:active:scale-100 ${
+                        dirty()
+                          ? "bg-gradient-to-r from-[#8B5CF6]/85 to-[#6EE7D8]/80 text-ink-950 shadow-[0_4px_18px_-6px_rgba(139,92,246,0.7)] hover:brightness-110"
+                          : "bg-white/[0.05] text-[#8A91A6] ring-1 ring-white/[0.08]"
                       }`}
                     >
-                      CTRL S
-                    </span>
-                  </button>
+                      保存
+                      <span
+                        class={`grid h-[22px] place-items-center rounded-full px-2 font-mono text-[9.5px] tracking-wide ${
+                          dirty() ? "bg-ink-950/25 text-ink-950/80" : "bg-white/[0.06] text-[#77809A]"
+                        }`}
+                      >
+                        CTRL S
+                      </span>
+                    </button>
+                  </Show>
                 </Show>
               </div>
 
-              <Show when={external()}>
+              {/* 共享指令自身是链接：只读且只能删除链接，改指向对自己没有意义 */}
+              <Show when={current()?.isLink && current()!.kind === "shared"}>
+                <div class="animate-rise mx-3 mt-2 flex shrink-0 items-center gap-3 rounded-2xl bg-[#FCD34D]/[0.06] px-4 py-2 ring-1 ring-[#FCD34D]/[0.16]">
+                  <i class="ph-light ph-warning text-[15px] text-[#FCD34D]" />
+                  <span class="flex-1 text-[12px] text-[#DCCf9A]">
+                    共享指令文件本身是符号链接（指向 {current()!.linkTarget
+                      ? shortPath(current()!.linkTarget!, homeDir())
+                      : "未知目标"}
+                    ），编辑器只读。删除该链接后可在此重建普通文件。
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => requestDelete(current()!)}
+                    class="h-7 rounded-full px-3 text-[11.5px] text-[#8A91A6] transition-all duration-500 ease-fluid hover:bg-white/[0.07] hover:text-[#D6DAE5]"
+                  >
+                    删除链接
+                  </button>
+                </div>
+              </Show>
+
+              {/* Agent 链接形态提示：只读原因与就地修复出口 */}
+              <Show
+                when={
+                  current()?.isLink &&
+                  current()!.kind === "agent" &&
+                  (linkIsForeign() || linkIsBroken())
+                }
+              >
+                <div class="animate-rise mx-3 mt-2 flex shrink-0 items-center gap-3 rounded-2xl bg-[#FCD34D]/[0.06] px-4 py-2 ring-1 ring-[#FCD34D]/[0.16]">
+                  <i class="ph-light ph-warning text-[15px] text-[#FCD34D]" />
+                  <span class="flex-1 text-[12px] text-[#DCCf9A]">
+                    <Show
+                      when={linkIsForeign()}
+                      fallback={<>符号链接指向的共享指令文件不存在，编辑器已只读。</>}
+                    >
+                      符号链接目标不是 Pizzic 的共享指令文件
+                      {current()!.linkTargetExists
+                        ? "，编辑器已只读，且不显示目标内容（避免读取任意文件）。"
+                        : "，且目标不存在。"}
+                    </Show>
+                  </span>
+                  <Show
+                    when={linkIsForeign()}
+                    fallback={
+                      <Show when={!current()!.linkTargetExists}>
+                        <button
+                          type="button"
+                          onClick={() => void createSharedFile()}
+                          class="h-7 rounded-full bg-[#FCD34D]/15 px-3 text-[11.5px] font-medium text-[#FCD34D] ring-1 ring-[#FCD34D]/25 transition-all duration-500 ease-fluid hover:bg-[#FCD34D]/25"
+                        >
+                          创建共享指令文件
+                        </button>
+                      </Show>
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() => requestLink(current()!)}
+                      class="h-7 rounded-full bg-[#FCD34D]/15 px-3 text-[11.5px] font-medium text-[#FCD34D] ring-1 ring-[#FCD34D]/25 transition-all duration-500 ease-fluid hover:bg-[#FCD34D]/25"
+                    >
+                      改指向共享指令
+                    </button>
+                  </Show>
+                  <button
+                    type="button"
+                    onClick={() => requestDelete(current()!)}
+                    class="h-7 rounded-full px-3 text-[11.5px] text-[#8A91A6] transition-all duration-500 ease-fluid hover:bg-white/[0.07] hover:text-[#D6DAE5]"
+                  >
+                    删除链接
+                  </button>
+                </div>
+              </Show>
+
+              <Show when={externalMode() === "conflict"}>
                 <div class="animate-rise mx-3 mt-2 flex shrink-0 items-center gap-3 rounded-2xl bg-[#FCD34D]/[0.06] px-4 py-2 ring-1 ring-[#FCD34D]/[0.16]">
                   <i class="ph-light ph-warning text-[15px] text-[#FCD34D]" />
                   <span class="flex-1 text-[12px] text-[#DCCf9A]">
@@ -552,6 +895,23 @@ export default function App() {
                 </div>
               </Show>
 
+              {/* 文件在外部被换成符号链接：只给放弃入口，绝不提供写穿链接的保存 */}
+              <Show when={externalMode() === "link"}>
+                <div class="animate-rise mx-3 mt-2 flex shrink-0 items-center gap-3 rounded-2xl bg-[#E5484D]/[0.07] px-4 py-2 ring-1 ring-[#E5484D]/[0.18]">
+                  <i class="ph-light ph-warning text-[15px] text-[#FB7185]" />
+                  <span class="flex-1 text-[12px] text-[#E4A3A6]">
+                    文件已变为符号链接，本地未保存的修改无法写入磁盘。
+                  </span>
+                  <button
+                    type="button"
+                    onClick={reloadFromDisk}
+                    class="h-7 rounded-full bg-[#E5484D]/15 px-3 text-[11.5px] font-medium text-[#FB7185] ring-1 ring-[#E5484D]/25 transition-all duration-500 ease-fluid hover:bg-[#E5484D]/25"
+                  >
+                    放弃本地修改并重新加载
+                  </button>
+                </div>
+              </Show>
+
               <div class="relative min-h-0 flex-1">
                 <div ref={editorHost} class="absolute inset-0" />
                 <Show when={current() && !current()!.exists}>
@@ -568,14 +928,27 @@ export default function App() {
                           {shortPath(current()!.path, homeDir())}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => void createFile()}
-                        class="flex h-10 items-center gap-2 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#6EE7D8] px-6 text-[13px] font-medium text-ink-950 shadow-[0_10px_30px_-10px_rgba(139,92,246,0.8)] transition-all duration-500 ease-fluid hover:brightness-110 active:scale-[0.97]"
-                      >
-                        <i class="ph-light ph-plus text-[15px]" />
-                        创建文件
-                      </button>
+                      <div class="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void createFile()}
+                          class="flex h-10 items-center gap-2 rounded-full bg-white/[0.05] px-5 text-[13px] text-[#B4BACC] ring-1 ring-white/[0.09] transition-all duration-500 ease-fluid hover:bg-white/[0.09] hover:text-[#E7EAF2] active:scale-[0.97]"
+                        >
+                          <i class="ph-light ph-plus text-[15px]" />
+                          创建文件
+                        </button>
+                        <Show when={current()!.kind === "agent"}>
+                          <button
+                            type="button"
+                            onClick={() => requestLink(current()!)}
+                            title="创建指向共享指令文件的符号链接（内容与「共享指令」始终保持一致）"
+                            class="flex h-10 items-center gap-2 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#6EE7D8] px-6 text-[13px] font-medium text-ink-950 shadow-[0_10px_30px_-10px_rgba(139,92,246,0.8)] transition-all duration-500 ease-fluid hover:brightness-110 active:scale-[0.97]"
+                          >
+                            <i class="ph-light ph-link text-[15px]" />
+                            创建符号链接
+                          </button>
+                        </Show>
+                      </div>
                     </div>
                   </div>
                 </Show>
@@ -599,6 +972,7 @@ export default function App() {
           archivedList={archivedList()}
           hasSelection={hasSelection()}
           currentIsShared={currentIsShared()}
+          readonly={isReadOnly()}
           lib={sharedLib()}
           onToggle={(name) => void toggleModule(name)}
           onDelete={(name) => void removeModule(name)}

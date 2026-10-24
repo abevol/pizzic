@@ -27,14 +27,15 @@ export interface LibraryEntry {
   archived: boolean;
 }
 
-export function Toggle(props: { on: boolean; onChange(): void }) {
+export function Toggle(props: { on: boolean; onChange(): void; disabled?: boolean }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={props.on}
+      disabled={props.disabled}
       onClick={() => props.onChange()}
-      class={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-all duration-500 ease-fluid active:scale-95 ${
+      class={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-all duration-500 ease-fluid active:scale-95 disabled:cursor-default disabled:opacity-35 disabled:active:scale-100 ${
         props.on
           ? "bg-gradient-to-r from-[#8B5CF6]/75 to-[#2DD4BF]/55 ring-1 ring-white/25 shadow-[0_0_12px_-2px_rgba(139,92,246,0.55)]"
           : "bg-white/[0.07] ring-1 ring-white/[0.09]"
@@ -73,6 +74,8 @@ export function ModulePanel(props: {
   archivedList: ArchivedModule[];
   hasSelection: boolean;
   currentIsShared: boolean;
+  /** 符号链接只读预览：模块可见，所有写操作禁用，存档与共享库不展示。 */
+  readonly: boolean;
   lib: LibraryEntry[] | null;
   onToggle(name: string): void;
   onDelete(name: string): void;
@@ -141,11 +144,23 @@ export function ModulePanel(props: {
         {toolPill({
           icon: "ph-textbox",
           label: "选区成模块",
-          disabled: !props.hasSelection,
+          disabled: props.readonly || !props.hasSelection,
           onClick: props.onWrapSelection,
         })}
-        {toolPill({ icon: "ph-plus", label: "新建", onClick: props.onNewModule })}
+        {toolPill({
+          icon: "ph-plus",
+          label: "新建",
+          disabled: props.readonly,
+          onClick: props.onNewModule,
+        })}
       </div>
+
+      <Show when={props.readonly}>
+        <div class="flex shrink-0 items-center gap-1.5 px-4 pb-2 text-[10.5px] text-[#59617A]">
+          <i class="ph-light ph-eye text-[11px]" />
+          只读预览 · 当前文件是符号链接
+        </div>
+      </Show>
 
       <div class="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2">
         <Show
@@ -154,9 +169,14 @@ export function ModulePanel(props: {
             <div class="mt-14 flex flex-col items-center gap-3 px-6 text-center">
               <i class="ph-light ph-puzzle-piece text-[30px] text-[#3E4560]" />
               <p class="text-[12.5px] leading-relaxed text-[#59617A]">
-                尚无模块。
-                <br />
-                选中正文「选区成模块」，或从下方共享库注入。
+                <Show
+                  when={!props.readonly}
+                  fallback={<>该视图没有可显示的模块。</>}
+                >
+                  尚无模块。
+                  <br />
+                  选中正文「选区成模块」，或从下方共享库注入。
+                </Show>
               </p>
             </div>
           }
@@ -244,21 +264,27 @@ export function ModulePanel(props: {
                           }
                         >
                           <Show when={!isRenaming()}>
-                            <span class="flex items-center">
-                              <IconBtn
-                                icon="ph-pencil-simple"
-                                title="重命名"
-                                onClick={() => beginRename(m.name)}
-                              />
-                              <IconBtn
-                                icon="ph-trash"
-                                title="删除模块"
-                                danger
-                                onClick={() => askDelete(m.name)}
-                              />
-                            </span>
+                            <Show when={!props.readonly}>
+                              <span class="flex items-center">
+                                <IconBtn
+                                  icon="ph-pencil-simple"
+                                  title="重命名"
+                                  onClick={() => beginRename(m.name)}
+                                />
+                                <IconBtn
+                                  icon="ph-trash"
+                                  title="删除模块"
+                                  danger
+                                  onClick={() => askDelete(m.name)}
+                                />
+                              </span>
+                            </Show>
                           </Show>
-                          <Toggle on={m.enabled} onChange={() => props.onToggle(m.name)} />
+                          <Toggle
+                            on={m.enabled}
+                            onChange={() => props.onToggle(m.name)}
+                            disabled={props.readonly}
+                          />
                         </Show>
                       </div>
                     </div>
@@ -269,7 +295,7 @@ export function ModulePanel(props: {
           </div>
         </Show>
 
-        <Show when={props.archivedList.length > 0}>
+        <Show when={!props.readonly && props.archivedList.length > 0}>
           <div class="mt-4 mb-1 flex items-center gap-2 px-3">
             <span class="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#59617A]">
               已停用
@@ -336,7 +362,11 @@ export function ModulePanel(props: {
                               onClick={() => askDelete(a.name)}
                             />
                           </span>
-                          <Toggle on={false} onChange={() => props.onToggle(a.name)} />
+                          <Toggle
+                            on={false}
+                            onChange={() => props.onToggle(a.name)}
+                            disabled={props.readonly}
+                          />
                         </Show>
                       </div>
                     </div>
@@ -348,7 +378,8 @@ export function ModulePanel(props: {
         </Show>
       </div>
 
-      <div class="shrink-0 border-t border-white/[0.05] px-2.5 py-2">
+      <Show when={!props.readonly}>
+        <div class="shrink-0 border-t border-white/[0.05] px-2.5 py-2">
         <button
           type="button"
           class="group flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-all duration-300 ease-fluid hover:bg-white/[0.04]"
@@ -434,7 +465,8 @@ export function ModulePanel(props: {
             </Show>
           </Show>
         </Show>
-      </div>
+        </div>
+      </Show>
     </aside>
   );
 }

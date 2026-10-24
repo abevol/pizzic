@@ -8,7 +8,7 @@ import {
   keymap,
   type DecorationSet,
 } from "@codemirror/view";
-import { EditorState, StateField, type Range } from "@codemirror/state";
+import { Compartment, EditorState, StateField, type Extension, type Range } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { markdown } from "@codemirror/lang-markdown";
@@ -204,8 +204,22 @@ export interface EditorHooks {
   onSave(): void;
 }
 
+/** 只读由 Compartment 动态切换：符号链接视图的只读态不是静态配置。 */
+const readOnlyCompartments = new WeakMap<EditorView, Compartment>();
+
+function readOnlyExtensions(on: boolean): Extension {
+  return [EditorState.readOnly.of(on), EditorView.editable.of(!on)];
+}
+
+export function setReadOnly(view: EditorView, on: boolean) {
+  const compartment = readOnlyCompartments.get(view);
+  if (!compartment) return;
+  view.dispatch({ effects: compartment.reconfigure(readOnlyExtensions(on)) });
+}
+
 export function createEditor(host: HTMLElement, hooks: EditorHooks): EditorView {
-  return new EditorView({
+  const readOnly = new Compartment();
+  const view = new EditorView({
     parent: host,
     state: EditorState.create({
       doc: "",
@@ -215,6 +229,7 @@ export function createEditor(host: HTMLElement, hooks: EditorHooks): EditorView 
         drawSelection(),
         dropCursor(),
         EditorView.lineWrapping,
+        readOnly.of(readOnlyExtensions(false)),
         markdown(),
         syntaxHighlighting(mdHighlight),
         moduleDecorations,
@@ -240,6 +255,8 @@ export function createEditor(host: HTMLElement, hooks: EditorHooks): EditorView 
       ],
     }),
   });
+  readOnlyCompartments.set(view, readOnly);
+  return view;
 }
 
 export function replaceDoc(view: EditorView, text: string) {

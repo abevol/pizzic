@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::RecvTimeoutError;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Serialize, Clone)]
@@ -24,6 +24,23 @@ pub fn start(app: AppHandle) {
     });
 }
 
+/// 补挂新增目录的监听。目标目录可能中途才被创建（首次使用某个 Agent），
+/// 已监听的目录不再重复 watch，避免重复事件。
+fn ensure_watches(watcher: &mut notify::RecommendedWatcher, watched: &mut HashSet<PathBuf>) {
+    watched.retain(|dir| dir.is_dir());
+    for dir in crate::targets::watch_dirs() {
+        if watched.contains(&dir) || !dir.is_dir() {
+            continue;
+        }
+        if watcher
+            .watch(&dir, notify::RecursiveMode::NonRecursive)
+            .is_ok()
+        {
+            watched.insert(dir);
+        }
+    }
+}
+
 fn run(app: &AppHandle) -> notify::Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |res| {
@@ -32,15 +49,8 @@ fn run(app: &AppHandle) -> notify::Result<()> {
         }
     })?;
 
-    // 所有目标都直接位于主目录下（OpenCode 是唯一二级目录），因此
-    // 只需监听主目录与 ~/.config 两个根，非递归，事件噪音很小。
-    let home = crate::targets::home();
-    let config = home.join(".config");
-    let home_clone = home.clone();
-    watcher.watch(&home, notify::RecursiveMode::NonRecursive)?;
-    if config.is_dir() {
-        watcher.watch(&config, notify::RecursiveMode::NonRecursive)?;
-    }
+    let mut watched: HashSet<PathBuf> = HashSet::new();
+    ensure_watches(&mut watcher, &mut watched);
 
     // (小写路径, 对外展示路径)：覆盖每个目标的全部候选文件
     let registry: Vec<(String, String)> = crate::targets::TARGETS
@@ -70,13 +80,9 @@ fn run(app: &AppHandle) -> notify::Result<()> {
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
 
-        // 周期性补挂监听：~/.config 可能中途才被创建。
         if last_rescan.elapsed() > Duration::from_secs(4) {
             last_rescan = Instant::now();
-            let _ = watcher.watch(&home_clone, notify::RecursiveMode::NonRecursive);
-            if config.is_dir() {
-                let _ = watcher.watch(&config, notify::RecursiveMode::NonRecursive);
-            }
+            ensure_watches(&mut watcher, &mut watched);
         }
 
         if pending.is_empty() {
@@ -91,11 +97,14 @@ fn run(app: &AppHandle) -> notify::Result<()> {
             let Some((_, display)) = registry.iter().find(|(k, _)| *k == lower) else {
                 continue;
             };
-            // 文件被删除时不发事件，前端刷新目标列表即可看到存在性变化。
-            let Ok(meta) = std::fs::metadata(&p) else { continue };
-            let mtime = meta.modified().unwrap_or(SystemTime::now());
-            if let Some(own) = suppress.remove(&lower) {
-                if own == mtime {
+            // 用 symlink_metadata：悬空链接仍算占位存在；文件被删除时也要发事件，
+            // 否则前端无法感知消失（侧栏分组与编辑器空态都依赖它）。
+            let modified = std::fs::symlink_metadata(&p)
+                .and_then(|m| m.modified())
+                .ok();
+            let own = suppress.remove(&lower);
+            if let (Some(own), Some(modified)) = (own, modified) {
+                if own == modified {
                     continue;
                 }
             }

@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 停用模块的存档条目（ADR-004）：停用即从目标文件中整块移除，
 /// 正文保存在这里；state.json 中存在而文件中不存在的条目即「已停用」。
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Entry {
     content: String,
     at: u64,
@@ -95,6 +95,32 @@ impl Store {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// 把 `from` 路径下、`to` 路径中尚不存在的存档条目并入 `to`。
+    /// 只在共享指令迁移时调用：同名条目以 `to` 已有者为准，`from` 原样保留。
+    pub fn merge_missing(&mut self, from: &str, to: &str) -> Result<(), String> {
+        let from_key = from.to_lowercase();
+        let to_key = to.to_lowercase();
+        let Some(src) = self.data.get(&from_key) else {
+            return Ok(());
+        };
+        let entries: Vec<(String, Entry)> = src
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.clone()))
+            .collect();
+        let dst = self.data.entry(to_key).or_default();
+        let mut changed = false;
+        for (name, entry) in entries {
+            if !dst.contains_key(&name) {
+                dst.insert(name, entry);
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist()?;
+        }
+        Ok(())
     }
 
     pub fn set(
