@@ -1,8 +1,6 @@
 import {
   Decoration,
   EditorView,
-  ViewPlugin,
-  ViewUpdate,
   WidgetType,
   drawSelection,
   dropCursor,
@@ -10,7 +8,7 @@ import {
   keymap,
   type DecorationSet,
 } from "@codemirror/view";
-import { EditorState, type Range } from "@codemirror/state";
+import { EditorState, StateField, type Range } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { markdown } from "@codemirror/lang-markdown";
@@ -123,8 +121,8 @@ class DisabledChip extends WidgetType {
 }
 
 /** 每次文档变化后全量重扫（指令文件都是小文件，解析成本可忽略）。 */
-function buildModuleDecorations(view: EditorView): DecorationSet {
-  const doc = view.state.doc;
+function buildModuleDecorations(state: EditorState): DecorationSet {
+  const doc = state.doc;
   const { modules } = parseDoc(doc.toString());
   const parts: Range<Decoration>[] = [];
 
@@ -189,22 +187,16 @@ function buildModuleDecorations(view: EditorView): DecorationSet {
   return Decoration.set(parts, true);
 }
 
-const moduleDecorations = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet;
-
-    constructor(view: EditorView) {
-      this.decorations = buildModuleDecorations(view);
-    }
-
-    update(u: ViewUpdate) {
-      if (u.docChanged || u.viewportChanged) {
-        this.decorations = buildModuleDecorations(u.view);
-      }
-    }
-  },
-  { decorations: (v) => v.decorations },
-);
+/**
+ * 模块装饰必须由 StateField 提供：CodeMirror 禁止 ViewPlugin 提供 block
+ * decorations（block widget 影响布局测量，需要随事务映射），否则在出现停用
+ * 占位块时抛 "Block decorations may not be specified via plugins"。
+ */
+const moduleDecorations = StateField.define<DecorationSet>({
+  create: (state) => buildModuleDecorations(state),
+  update: (value, tr) => (tr.docChanged ? buildModuleDecorations(tr.state) : value),
+  provide: (f) => EditorView.decorations.from(f),
+});
 
 export interface EditorHooks {
   onDocChanged(): void;
