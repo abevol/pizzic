@@ -68,11 +68,21 @@ assert(
   "正文偏移与切片一致",
 );
 
-// 2. 属性顺序无关 + 自闭合
+// 2. 属性顺序无关 + 自闭合 + name 内部空格
 const p2 = parseDoc('<pizzic-module enabled="false" name="abc"></pizzic-module>');
 assert(p2.modules.length === 1 && p2.modules[0]!.name === "abc" && !p2.modules[0]!.enabled, "属性顺序无关解析");
 const p3 = parseDoc('<pizzic-module name="self"/>');
 assert(p3.modules.length === 1 && p3.modules[0]!.name === "self" && p3.modules[0]!.body === "", "自闭合解析为空模块");
+const pSpace = parseDoc('<pizzic-module name="rtk-instructions v1">\n正文\n</pizzic-module>');
+assert(
+  pSpace.modules.length === 1 && pSpace.modules[0]!.name === "rtk-instructions v1",
+  "name 支持内部空格",
+);
+assert(
+  parseDoc('<pizzic-module name=" x">a</pizzic-module>').modules.length === 0 &&
+    parseDoc('<pizzic-module name="x ">a</pizzic-module>').modules.length === 0,
+  "首尾空格的 name 仍被拒绝",
+);
 
 // 3. 停用 → 存档 → 重新启用：正文应完整恢复
 const m0 = p1.modules[0]!;

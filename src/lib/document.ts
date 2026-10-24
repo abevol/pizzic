@@ -11,7 +11,7 @@
  * 约束：
  * - 标签必须位于行首（允许前置空白），行内出现的标签视为普通文本，防止讲解性文字误配对；
  * - fenced code block（``` 与 ~~~）内的标签不参与解析；
- * - name 满足 [A-Za-z0-9][A-Za-z0-9_-]*，属性值一律双引号；
+ * - name 首尾为字母数字/连字符/下划线，内部允许空格；属性值一律双引号；
  * - 模块扁平、不允许嵌套：未闭合时遇到新的开标签，放弃上一块从此处重开；
  * - 文件包含 <!DOCTYPE 或 <!ENTITY 时视为不可信 XML 载体：本解析器是扫描式的，
  *   不构建实体表、不启用外部实体，但仍拒绝解析此类文件的模块结构（全文视为普通文本）；
@@ -22,7 +22,11 @@
 
 export const CLOSE_TAG = "</pizzic-module>";
 
-export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+/**
+ * name 允许内部空格（便于 "rtk-instructions v1" 这类版本化命名），
+ * 但首尾必须是字母数字/连字符/下划线——不含引号/尖括号，标签结构不可被注入。
+ */
+export const NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9 _-]*[A-Za-z0-9_-])?$/;
 
 const OPEN_RE = /^[ \t]*(<pizzic-module\b[^\n>]*>)/gm;
 const CLOSE_RE = /^[ \t]*(<\/pizzic-module\s*>)/gm;
