@@ -1,5 +1,4 @@
 import { Show } from "solid-js";
-import { shortPath } from "./Sidebar";
 
 export interface StatusFlash {
   text: string;
@@ -7,28 +6,24 @@ export interface StatusFlash {
 }
 
 export function StatusBar(props: {
-  path: string | null;
-  homeDir: string;
+  encoding: string | null;
+  lineEnding: string | null;
   dirty: boolean;
   lines: number;
   chars: number;
   flash: StatusFlash | null;
 }) {
   return (
-    <footer class="shell flex h-9 shrink-0 items-center gap-3 px-4">
-      <Show
-        when={props.path}
-        fallback={<span class="text-[11px] text-[#4E5670]">未选择文件</span>}
+    <footer class="shell flex h-9 shrink-0 items-center gap-2.5 px-4">
+      <i class="ph-light ph-file-text text-[12px] text-[#59617A]" />
+      <span class="font-mono text-[10.5px] text-[#77809A]">{props.encoding ?? "—"}</span>
+      <span class="h-3 w-px bg-white/[0.08]" />
+      <span
+        class="font-mono text-[10.5px] text-[#77809A]"
+        title="文件换行符模式（加载时自动识别，保存时保持不变）"
       >
-        <i class="ph-light ph-file-text text-[12px] text-[#59617A]" />
-        <span
-          dir="rtl"
-          class="min-w-0 max-w-[46%] truncate font-mono text-[10.5px] text-[#77809A]"
-          title={props.path ?? ""}
-        >
-          {shortPath(props.path ?? "", props.homeDir)}
-        </span>
-      </Show>
+        {props.lineEnding ?? "—"}
+      </span>
 
       <span class="flex-1" />
 

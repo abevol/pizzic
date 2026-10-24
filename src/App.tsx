@@ -49,6 +49,8 @@ export default function App() {
   const [stats, setStats] = createSignal({ lines: 0, chars: 0 });
   const [sharedLib, setSharedLib] = createSignal<LibraryEntry[] | null>(null);
   const [confirm, setConfirm] = createSignal<ConfirmSpec | null>(null);
+  const [lineEnding, setLineEnding] = createSignal<"LF" | "CRLF" | null>(null);
+  const [encoding, setEncoding] = createSignal<string | null>(null);
 
   let editorHost!: HTMLDivElement;
   let view: EditorView | null = null;
@@ -75,13 +77,28 @@ export default function App() {
     flashTimer = setTimeout(() => setStatus(null), 3200);
   }
 
+  /**
+   * 编辑器内部（CodeMirror 存储层）永远只保留 LF：实测无论何种配置，
+   * CM 都会把 \r\n 归一化为 \n（见 scripts/cm-eol-probe.mjs）。
+   * 因此换行模式只在边界处理：dirty 比较对 EOL 归一化，保存时按文件模式还原。
+   */
+  const normalizeEOL = (s: string) => s.replace(/\r\n?/g, "\n");
+
   function syncFromEditor() {
     if (!view) return;
     const text = view.state.doc.toString();
     setModules(parseDoc(text).modules);
     const d = disk();
-    setDirty(d ? text !== d.text : false);
+    setDirty(d ? normalizeEOL(text) !== normalizeEOL(d.text) : false);
     setStats({ lines: view.state.doc.lines, chars: text.length });
+  }
+
+  /** 把磁盘快照应用进编辑器（文本由 CM 统一为 LF；换行模式仅记录用于保存还原）。 */
+  function applySnapshot(snap: FileSnapshot) {
+    if (!view) return;
+    setLineEnding(/\r\n/.test(snap.text) ? "CRLF" : "LF");
+    setEncoding(snap.text.charCodeAt(0) === 0xfeff ? "UTF-8 BOM" : "UTF-8");
+    replaceDoc(view, snap.text);
   }
 
   async function refreshTargets() {
@@ -123,6 +140,8 @@ export default function App() {
       setExternal(false);
       setModules([]);
       setStats({ lines: 0, chars: 0 });
+      setLineEnding(null);
+      setEncoding(null);
       replaceDoc(view, "");
       try {
         setArchived(await api.getDisabled(t.path));
@@ -139,7 +158,7 @@ export default function App() {
       setDirty(false);
       setExternal(false);
       setArchived(await api.getDisabled(t.path));
-      replaceDoc(view, snap.text);
+      applySnapshot(snap);
     } catch (e) {
       flash(String(e), "warn");
     }
@@ -169,7 +188,9 @@ export default function App() {
   async function save() {
     const t = current();
     if (!t || !view) return;
-    const text = view.state.doc.toString();
+    // 编辑器内部是 LF；写盘前按文件实际换行模式还原，保持磁盘文件字节形态。
+    const editorText = view.state.doc.toString();
+    const text = lineEnding() === "CRLF" ? editorText.replace(/\r?\n/g, "\r\n") : editorText;
     try {
       const snap = await api.writeFile(t.path, text);
       loadedPath = t.path;
@@ -192,7 +213,7 @@ export default function App() {
       loadedPath = t.path;
       setDisk(snap);
       setDirty(false);
-      replaceDoc(view, snap.text);
+      applySnapshot(snap);
       flash("文件已创建");
       void loadSharedLib();
     } catch (e) {
@@ -216,12 +237,13 @@ export default function App() {
       if (t.exists && view) {
         try {
           const snap = await api.readFile(t.path);
-          if (view.state.doc.toString() === snap.text) {
+          // 自写回声兜底：磁盘内容与编辑器语义一致（EOL 归一化后相同）则不打扰。
+          if (normalizeEOL(view.state.doc.toString()) === normalizeEOL(snap.text)) {
             setDisk(snap);
             return;
           }
           setDisk(snap);
-          replaceDoc(view, snap.text);
+          applySnapshot(snap);
           flash("检测到外部修改，已重新加载");
         } catch {
           /* 文件可能刚被删除，等待下一次刷新 */
@@ -261,8 +283,7 @@ export default function App() {
     const m = parseDoc(text).modules.find((x) => x.name === name);
     if (!m) return;
     view.dispatch({ changes: [deleteEdit(m, text)] });
-    if (archived()[name] !== undefined) {
-      try {
+    if (archived()[name] !== undefined) {      try {
         await api.setDisabled(t.path, name, null);
       } catch {
         /* 存档清理失败无碍 */
@@ -464,8 +485,8 @@ export default function App() {
           </div>
 
           <StatusBar
-            path={current()?.path ?? null}
-            homeDir={homeDir()}
+            encoding={encoding()}
+            lineEnding={lineEnding()}
             dirty={dirty()}
             lines={stats().lines}
             chars={stats().chars}

@@ -98,7 +98,23 @@ const pa = parseDoc(appended);
 assert(pa.modules.length === 1 && pa.modules[0]!.name === "extra", "文末注入生成模块");
 assert(pa.modules[0]!.body.includes("注入的内容"), "注入正文正确");
 
-// 5. 命名工具
+// 5. CRLF 文档：解析不归一化，停用/启用逐字节往返
+const crlf =
+  "<!-- Pizzic:begin:win -->\r\nWindows 行一。\r\n<!-- Pizzic:end -->\r\n";
+const pc = parseDoc(crlf);
+assert(pc.modules.length === 1, "CRLF 文档解析出模块");
+assert(
+  pc.modules[0]!.body === "\r\nWindows 行一。\r\n",
+  "CRLF 正文原样保真（不归一化）",
+);
+const crlfDisabled = applyEdits(crlf, disableEdits(pc.modules[0]!));
+const crlfBack = applyEdits(
+  crlfDisabled,
+  enableEdits(parseDoc(crlfDisabled).modules.find((m) => m.name === "win")!, pc.modules[0]!.body),
+);
+assert(crlfBack === crlf, "CRLF 停用再启用逐字节往返一致");
+
+// 6. 命名工具
 assert(nextModuleName([]) === "module-1", "首个自动名 module-1");
 assert(nextModuleName(["module-1", "module-3"]) === "module-2", "跳过占用名");
 assert(makeModuleBlock("x", "  内容 ").endsWith("<!-- Pizzic:end -->\n"), "块序列化格式正确");
