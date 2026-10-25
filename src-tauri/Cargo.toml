@@ -20,6 +20,17 @@ notify = "8"
 tempfile = "3"
 trash = "5"
 
+# 原生启动窗：自绘启动壳位图，在 WebView2 首帧出来之前顶上。
+[target.'cfg(windows)'.dependencies]
+png = "0.18"
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_HiDpi",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
 [profile.release]
 codegen-units = 1
 lto = true

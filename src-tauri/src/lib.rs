@@ -1,4 +1,5 @@
 mod shared;
+mod splash;
 mod store;
 mod targets;
 mod watch;
@@ -193,18 +194,39 @@ fn set_disabled_module(
     state.store.lock().unwrap().set(&path, &name, content, after)
 }
 
-/// 前端启动壳已解析：此时让主窗口出现，首帧就是品牌壳而不是深色空窗。
-/// 窗口在 `tauri.conf.json` 中默认隐藏，只能经由这里（或下面的兜底）显示。
+/// 前端启动壳已解析：让主窗口出现，并在它画好首帧后撤掉原生启动窗。
+///
+/// 主窗口在 `tauri.conf.json` 中默认隐藏，只能经由这里（或下面的兜底）显示。
+/// 启动窗是置顶的，主窗口先在被它盖住的情况下完成首帧绘制，再由 `hand_off`
+/// 撤掉，用户看到的始终是同一个画面，没有空白过渡。
 #[tauri::command]
 fn app_ready(app: AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
     }
+    splash::hand_off();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    splash::preload();
+
+    // 启动窗必须赶在 WebView2 初始化之前出现：主窗口要等它建完，约 1 秒。
+    // 尺寸直接读窗口配置，不在 Rust 里另抄一份。
+    if let Some(win) = context
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main" && w.create)
+    {
+        if win.center && win.x.is_none() && win.y.is_none() {
+            splash::show(win.width, win.height);
+        }
+    }
+
     tauri::Builder::default()
         .setup(|app| {
             let config_dir = app
@@ -223,13 +245,14 @@ pub fn run() {
             watch::start(app.handle().clone());
 
             // 兜底：前端脚本异常、或 app_ready 没能送达（例如资源加载失败）时，
-            // 窗口不能永久隐身。正常路径下窗口早已可见，这里的 show 是空操作。
+            // 窗口不能永久隐身、启动窗也不能一直挂着。
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 if let Some(w) = handle.get_webview_window("main") {
                     let _ = w.show();
                 }
+                splash::hand_off();
             });
             Ok(())
         })
@@ -244,6 +267,6 @@ pub fn run() {
             get_disabled_modules,
             set_disabled_module
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

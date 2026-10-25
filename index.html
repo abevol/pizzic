@@ -99,8 +99,9 @@
     </div>
     <div id="root"></div>
     <script>
-      // 壳已解析：让窗口出现。IPC 在页面脚本之前就绪，直接用内部通道，
-      // 免得为这一句引入模块请求。Rust 侧另有超时兜底，前端异常不会让窗口永久隐藏。
+      // 壳已解析，让主窗口出来接管（Rust 收到后显示窗口，稍后再撤原生启动窗）。
+      // 这里不等绘制信号：窗口还不可见时，paint 条目和 requestAnimationFrame
+      // 都要等到窗口出现才会产生，等它们等于永远等不到。首帧由原生侧按帧时延兜住。
       try {
         window.__TAURI_INTERNALS__.invoke("app_ready");
       } catch (err) {
