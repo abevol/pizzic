@@ -3,10 +3,110 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>Pizzic — Agent 指令工作台</title>
+    <!--
+      启动壳：内联样式与标记，不依赖任何外部资源。
+      Windows 下 WebView2 冷启动要约 0.7–0.9 秒，主窗口默认不可见，
+      待这份静态标记解析完再显示窗口，首帧就是品牌壳而不是深色空窗。
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #07080b;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        background: #07080b;
+        color: #8f97ac;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        user-select: none;
+      }
+      #boot-mark {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 14px 16px;
+        border-radius: 15px;
+        background: linear-gradient(135deg, #a78bfa, #8b9cf9 52%, #5eead4);
+        box-shadow: 0 10px 44px -10px rgba(139, 124, 250, 0.6);
+      }
+      #boot-mark i {
+        display: block;
+        height: 4px;
+        width: 22px;
+        border-radius: 999px;
+        background: rgba(7, 8, 11, 0.82);
+      }
+      #boot-mark i:nth-child(2) {
+        background: rgba(7, 8, 11, 0.5);
+      }
+      #boot-mark i:nth-child(3) {
+        width: 12px;
+      }
+      #boot-word {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+      }
+      #boot-progress {
+        width: 120px;
+        height: 2px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+      #boot-progress span {
+        display: block;
+        height: 100%;
+        width: 38%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, transparent, #a78bfa, transparent);
+        animation: boot-sweep 1.2s ease-in-out infinite;
+      }
+      @keyframes boot-sweep {
+        from {
+          transform: translateX(-120%);
+        }
+        to {
+          transform: translateX(320%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-progress span {
+          animation: none;
+          width: 100%;
+          opacity: 0.35;
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="boot">
+      <div id="boot-mark"><i></i><i></i><i></i></div>
+      <div id="boot-word">Pizzic</div>
+      <div id="boot-progress"><span></span></div>
+    </div>
     <div id="root"></div>
+    <script>
+      // 壳已解析：让窗口出现。IPC 在页面脚本之前就绪，直接用内部通道，
+      // 免得为这一句引入模块请求。Rust 侧另有超时兜底，前端异常不会让窗口永久隐藏。
+      try {
+        window.__TAURI_INTERNALS__.invoke("app_ready");
+      } catch (err) {
+        // 非 Tauri 环境（例如直接在浏览器里看 vite dev）忽略
+      }
+    </script>
     <script type="module" src="/src/index.tsx"></script>
   </body>
 </html>

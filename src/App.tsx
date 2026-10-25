@@ -252,13 +252,16 @@ export default function App() {
     }
 
     try {
-      const snap = await api.readFile(t.path);
+      // 正文与停用存档是两次独立查询：并行取回，别让两次往返依次计入首屏。
+      // 存档读取失败只丢存档，不让已读到的正文作废。
+      const [snap, archived] = await Promise.all([
+        api.readFile(t.path),
+        api.getDisabled(t.path).catch(() => ({})),
+      ]);
       if (seq !== loadSeq) return;
       setDisk(snap);
       setDirty(false);
       applySnapshot(snap);
-      const archived = await api.getDisabled(t.path);
-      if (seq !== loadSeq) return;
       setArchived(archived);
     } catch (e) {
       if (seq !== loadSeq) return;
@@ -649,35 +652,46 @@ export default function App() {
   });
 
   onMount(async () => {
-    view = createEditor(editorHost, {
-      onDocChanged: syncFromEditor,
-      onSelectionChange: (empty) => setHasSelection(!empty),
-      onSave: () => void save(),
-    });
-    await refreshTargets();
-    unlisteners.push(
-      await listen<{ path: string }>("pizzic:file-changed", (e) => void onExternal(e.payload.path)),
-      await listen("tauri://focus", async () => {
-        await refreshTargets();
-        await reconcileShape();
-      }),
-    );
-    const first = targets().find((t) => t.id === "shared") ?? targets()[0];
-    if (first) await doLoad(first);
-
-    const mig = pendingMigration;
-    pendingMigration = null;
-    if (mig) {
-      setConfirm({
-        title: "旧共享指令已迁移",
-        body:
-          `已将 ${shortPath(mig.legacyPath, homeDir())} 复制到 ${shortPath(mig.sharedPath, homeDir())}\n` +
-          "为防止意外冲突，建议删除旧文件。",
-        confirmText: "删除旧文件",
-        cancelText: "保留旧文件",
-        danger: true,
-        onConfirm: () => void removeLegacy(),
+    try {
+      view = createEditor(editorHost, {
+        onDocChanged: syncFromEditor,
+        onSelectionChange: (empty) => setHasSelection(!empty),
+        onSave: () => void save(),
       });
+      // 三件事互不依赖，并行发出：串行 await 会让每个 IPC 往返依次计入首屏时间。
+      // 事件监听先于首次载入生效；聚焦回调自己会刷新目标表，不会读到半成品。
+      const [, fileChanged, focus] = await Promise.all([
+        refreshTargets(),
+        listen<{ path: string }>("pizzic:file-changed", (e) => void onExternal(e.payload.path)),
+        listen("tauri://focus", async () => {
+          await refreshTargets();
+          await reconcileShape();
+        }),
+      ]);
+      unlisteners.push(fileChanged, focus);
+      const first = targets().find((t) => t.id === "shared") ?? targets()[0];
+      if (first) await doLoad(first);
+
+      const mig = pendingMigration;
+      pendingMigration = null;
+      if (mig) {
+        setConfirm({
+          title: "旧共享指令已迁移",
+          body:
+            `已将 ${shortPath(mig.legacyPath, homeDir())} 复制到 ${shortPath(mig.sharedPath, homeDir())}\n` +
+            "为防止意外冲突，建议删除旧文件。",
+          confirmText: "删除旧文件",
+          cancelText: "保留旧文件",
+          danger: true,
+          onConfirm: () => void removeLegacy(),
+        });
+      }
+    } catch (e) {
+      flash(String(e), "warn");
+    } finally {
+      // 首屏数据就位后再撤启动壳；异常时同样要撤，否则错误会被壳永久盖住。
+      // 与上面的渲染发生在同一帧，用户看到的第一帧就是应用本身。
+      document.getElementById("boot")?.remove();
     }
   });
 

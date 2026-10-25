@@ -193,6 +193,16 @@ fn set_disabled_module(
     state.store.lock().unwrap().set(&path, &name, content, after)
 }
 
+/// 前端启动壳已解析：此时让主窗口出现，首帧就是品牌壳而不是深色空窗。
+/// 窗口在 `tauri.conf.json` 中默认隐藏，只能经由这里（或下面的兜底）显示。
+#[tauri::command]
+fn app_ready(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -211,9 +221,20 @@ pub fn run() {
                 migration: Mutex::new(migration),
             });
             watch::start(app.handle().clone());
+
+            // 兜底：前端脚本异常、或 app_ready 没能送达（例如资源加载失败）时，
+            // 窗口不能永久隐身。正常路径下窗口早已可见，这里的 show 是空操作。
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.show();
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            app_ready,
             list_targets,
             read_file,
             write_file,
