@@ -7,7 +7,7 @@ const AGENT_ICONS: Record<string, string> = {
   codex: "ph-terminal-window",
   gemini: "ph-star-four",
   agy: "ph-rocket",
-  opencode: "ph-brackets",
+  opencode: "ph-brackets-angle",
   deveco: "ph-cube",
   dsh: "ph-pulse",
   goose: "ph-bird",
