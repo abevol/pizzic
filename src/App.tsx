@@ -647,8 +647,11 @@ export default function App() {
   }
 
   // 只读随当前目标形态切换：链接一律只读，普通文件恢复可编辑。
+  // isReadOnly 必须无条件读取：effect 首跑先于 onMount，view 还是 null，
+  // 若在 if 短路之后才读取，effect 不建立依赖、永不重跑，只读态随之失效。
   createEffect(() => {
-    if (view) setReadOnly(view, isReadOnly());
+    const readonly = isReadOnly();
+    if (view) setReadOnly(view, readonly);
   });
 
   onMount(async () => {
